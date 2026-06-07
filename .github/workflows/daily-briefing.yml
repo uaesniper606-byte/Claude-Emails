@@ -1,0 +1,50 @@
+name: Daily Morning Briefing
+
+on:
+  schedule:
+    - cron: "30 10 * * 1-5"
+  workflow_dispatch:
+
+jobs:
+  briefing:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install packages
+        run: pip install --quiet playwright requests arabic-reshaper python-bidi
+
+      - name: Install Chromium
+        run: python -m playwright install chromium --with-deps
+
+      - name: Download fonts
+        run: |
+          mkdir -p fonts
+          curl -sL "https://github.com/alif-type/amiri/releases/download/1.000/amiri-1.000.zip" -o amiri.zip
+          unzip -qq amiri.zip -d amiri_tmp
+          cp amiri_tmp/Amiri-Regular.ttf fonts/
+          cp amiri_tmp/Amiri-Bold.ttf fonts/
+          curl -sL "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/fonts/DejaVuSans.ttf" -o fonts/DejaVuSans.ttf
+          curl -sL "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/fonts/DejaVuSans-Bold.ttf" -o fonts/DejaVuSans-Bold.ttf
+
+      - name: Run agent
+        env:
+          AV_KEY: ${{ secrets.AV_KEY }}
+          BRIEFING_PAT: ${{ secrets.BRIEFING_PAT }}
+          RESEND_KEY: ${{ secrets.RESEND_KEY }}
+        run: python morning_briefing_agent.py
+
+      - name: Save PDF artifact
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: briefing-${{ github.run_id }}
+          path: "*.pdf"
+          retention-days: 30
