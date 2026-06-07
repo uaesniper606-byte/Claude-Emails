@@ -24,15 +24,8 @@ jobs:
       - name: Install Chromium
         run: python -m playwright install chromium --with-deps
 
-      - name: Download fonts
-        run: |
-          mkdir -p fonts
-          curl -sL "https://github.com/alif-type/amiri/releases/download/1.000/amiri-1.000.zip" -o amiri.zip
-          unzip -qq amiri.zip -d amiri_tmp
-          cp amiri_tmp/Amiri-Regular.ttf fonts/
-          cp amiri_tmp/Amiri-Bold.ttf fonts/
-          curl -sL "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/fonts/DejaVuSans.ttf" -o fonts/DejaVuSans.ttf
-          curl -sL "https://github.com/dejavu-fonts/dejavu-fonts/raw/master/fonts/DejaVuSans-Bold.ttf" -o fonts/DejaVuSans-Bold.ttf
+      - name: Verify fonts
+        run: ls -lh fonts/
 
       - name: Run agent
         env:
