@@ -46,7 +46,7 @@ CRYPTO_META = {
     "GALA": {"name": "Gala Games",  "name_ar": "غالا غيمز",  "color": "#fbbf24", "cat": "ألعاب"},
 }
 
-FONT_DIR = "/home/claude/fonts"
+FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
 # ── DATA FETCHER ─────────────────────────────────────────────
 
@@ -831,7 +831,7 @@ def build_all_pdfs(data, today_str):
 <body>{body}</body></html>"""
 
     date_safe = today_str.replace(",", "").replace(" ", "_")
-    out_dir   = "/mnt/user-data/outputs"
+    out_dir   = os.path.dirname(os.path.abspath(__file__))
     os.makedirs(out_dir, exist_ok=True)
 
     pdfs = {}
