@@ -21,7 +21,7 @@ from playwright.sync_api import sync_playwright
 # ── CONFIG ───────────────────────────────────────────────────
 AV_KEY        = os.environ.get("AV_KEY", "HONKZR3NHFIQ59P4")
 AV_BASE       = "https://www.alphavantage.co/query"
-GITHUB_PAT    = "os.environ.get("BRIEFING_PAT", "")"
+GITHUB_PAT    = os.environ.get("BRIEFING_PAT", "")
 GITHUB_REPO   = "uaesniper606-byte/Claude-Emails"
 EMAIL_TO      = "uae.sniper606@gmail.com"
 EMAIL_FROM    = "onboarding@resend.dev"
@@ -831,7 +831,7 @@ def build_all_pdfs(data, today_str):
 <body>{body}</body></html>"""
 
     date_safe = today_str.replace(",", "").replace(" ", "_")
-    out_dir   = os.path.dirname(os.path.abspath(__file__))
+    out_dir   = os.getcwd()
     os.makedirs(out_dir, exist_ok=True)
 
     pdfs = {}
