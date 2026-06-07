@@ -1,231 +1,130 @@
 """
-=============================================================
-MORNING BRIEFING AGENT — Saif's Portfolio
-=============================================================
-Runs every weekday at 2:30 PM GST.
-Fetches live data from Alpha Vantage MCP, builds bilingual
-PDF infographics (Arabic + English), uploads to GitHub,
-and sends via Resend relay.
-
-Usage:
-    python3 morning_briefing_agent.py
-
-Schedule (cron, UTC = GST-4):
-    30 10 * * 1-5  python3 /path/to/morning_briefing_agent.py
-=============================================================
+Morning Briefing Agent — Saif's Portfolio
+=========================================
+Runs every weekday at 2:30 PM GST (10:30 UTC).
+Sends 3 PDFs:
+  1. Arabic Portfolio PDF  — محفظتك الشخصية (عربي)
+  2. Arabic Market PDF     — تحليل السوق + فرص الدخول (عربي)
+  3. English Market PDF    — Market Analysis + Opportunities (English)
 """
 
-import os, json, base64, time, datetime, requests
+import os, base64, time, datetime, requests
 from playwright.sync_api import sync_playwright
 
-# ── CONFIG ───────────────────────────────────────────────────
-AV_KEY        = os.environ.get("AV_KEY", "HONKZR3NHFIQ59P4")
-AV_BASE       = "https://www.alphavantage.co/query"
-GITHUB_PAT    = os.environ.get("BRIEFING_PAT", "")
-GITHUB_REPO   = "uaesniper606-byte/Claude-Emails"
-EMAIL_TO      = "uae.sniper606@gmail.com"
-EMAIL_FROM    = "onboarding@resend.dev"
+# ── CONFIG ────────────────────────────────────────────────────
+AV_KEY      = os.environ.get("AV_KEY", "HONKZR3NHFIQ59P4")
+AV_BASE     = "https://www.alphavantage.co/query"
+GITHUB_PAT  = os.environ.get("BRIEFING_PAT", "")
+GITHUB_REPO = "uaesniper606-byte/Claude-Emails"
+EMAIL_TO    = "uae.sniper606@gmail.com"
+EMAIL_FROM  = "onboarding@resend.dev"
 
-STOCKS  = ["MU", "NOW", "PLTR", "CBRS"]
-CRYPTOS = ["XRP", "SOL", "HBAR", "SHIB", "ADA", "ARB", "DOT", "GALA"]
-
-STOCK_META = {
-    "MU":   {"name": "Micron Technology",  "name_ar": "مايكرون تكنولوجي",   "color": "#e53e3e", "earn": "Jun 24, 2026"},
-    "NOW":  {"name": "ServiceNow",         "name_ar": "سيرفس ناو",           "color": "#10b981", "earn": "Jul 29, 2026"},
-    "PLTR": {"name": "Palantir",           "name_ar": "بالانتير",            "color": "#8b5cf6", "earn": "Aug 10, 2026"},
-    "CBRS": {"name": "Cerebras Systems",   "name_ar": "سيريبراس سيستمز",    "color": "#f59e0b", "earn": "TBD"},
+# ── SAIF'S PORTFOLIO (fixed) ──────────────────────────────────
+PORTFOLIO = {
+    "stocks": [
+        {"sym":"MU",   "name":"مايكرون تكنولوجي",    "name_en":"Micron Technology",    "qty":33,             "buy":1037.10, "color":"E53E3E", "earn":"24 يونيو 2026"},
+        {"sym":"NOW",  "name":"سيرفس ناو",            "name_en":"ServiceNow",           "qty":100,            "buy":135.60,  "color":"059669", "earn":"29 يوليو 2026"},
+        {"sym":"PLTR", "name":"بالانتير",             "name_en":"Palantir Technologies","qty":52,             "buy":162.50,  "color":"7C3AED", "earn":"10 أغسطس 2026"},
+        {"sym":"CBRS", "name":"سيريبراس سيستمز",     "name_en":"Cerebras Systems",     "qty":33,             "buy":300.00,  "color":"D97706", "earn":"غير محدد"},
+    ],
+    "crypto": [
+        {"sym":"XRP",  "name":"ريبل",        "name_en":"Ripple",     "qty":1091.9141638,   "buy":0.94640265, "color":"0284C7", "cat":"مدفوعات"},
+        {"sym":"SOL",  "name":"سولانا",      "name_en":"Solana",     "qty":18.67559317,    "buy":82.35,      "color":"9945FF", "cat":"بنية تحتية"},
+        {"sym":"HBAR", "name":"هيدرا",       "name_en":"Hedera",     "qty":6888.17073321,  "buy":0.27098023, "color":"0D9488", "cat":"بنية تحتية"},
+        {"sym":"SHIB", "name":"شيبا إينو",   "name_en":"Shiba Inu",  "qty":9130010.54,     "buy":0.000055,   "color":"DC2626", "cat":"ميم"},
+        {"sym":"ADA",  "name":"كاردانو",     "name_en":"Cardano",    "qty":137.26467321,   "buy":1.78,       "color":"1D4ED8", "cat":"بنية تحتية"},
+        {"sym":"ARB",  "name":"أربيتروم",    "name_en":"Arbitrum",   "qty":221.88235265,   "buy":0.1049,     "color":"0EA5E9", "cat":"الطبقة 2"},
+        {"sym":"DOT",  "name":"بولكادوت",    "name_en":"Polkadot",   "qty":6.14489028,     "buy":46.30,      "color":"DB2777", "cat":"بنية تحتية"},
+        {"sym":"GALA", "name":"غالا غيمز",   "name_en":"Gala Games", "qty":1051.07179997,  "buy":0.379773,   "color":"D97706", "cat":"ألعاب"},
+    ]
 }
-CRYPTO_META = {
-    "XRP":  {"name": "Ripple",      "name_ar": "ريبل",       "color": "#00aae4", "cat": "مدفوعات"},
-    "SOL":  {"name": "Solana",      "name_ar": "سولانا",     "color": "#9945ff", "cat": "بنية تحتية"},
-    "HBAR": {"name": "Hedera",      "name_ar": "هيدرا",      "color": "#1ad2a4", "cat": "بنية تحتية"},
-    "SHIB": {"name": "Shiba Inu",   "name_ar": "شيبا إينو",  "color": "#e74c3c", "cat": "ميم"},
-    "ADA":  {"name": "Cardano",     "name_ar": "كاردانو",    "color": "#0033ad", "cat": "بنية تحتية"},
-    "ARB":  {"name": "Arbitrum",    "name_ar": "أربيتروم",   "color": "#28a0f0", "cat": "الطبقة 2"},
-    "DOT":  {"name": "Polkadot",    "name_ar": "بولكادوت",   "color": "#e6007a", "cat": "بنية تحتية"},
-    "GALA": {"name": "Gala Games",  "name_ar": "غالا غيمز",  "color": "#fbbf24", "cat": "ألعاب"},
-}
 
+# ── FONTS ─────────────────────────────────────────────────────
 FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
 
-# ── DATA FETCHER ─────────────────────────────────────────────
+def b64f(p):
+    with open(p, "rb") as f: return base64.b64encode(f.read()).decode()
 
-def av_get(params: dict, retries=2) -> dict:
-    """Call Alpha Vantage REST API directly (fallback when MCP limit hit)."""
+# ── DATA FETCH ────────────────────────────────────────────────
+def av_get(params):
     params["apikey"] = AV_KEY
-    for attempt in range(retries):
-        try:
-            r = requests.get(AV_BASE, params=params, timeout=15)
-            data = r.json()
-            if "Note" in data or "Information" in data:
-                print(f"  ⚠️  AV rate limit hit: {list(data.values())[0][:80]}")
-                return {}
-            return data
-        except Exception as e:
-            print(f"  ⚠️  AV request error: {e}")
-            time.sleep(2)
-    return {}
-
-def fetch_quote(symbol: str) -> dict:
-    data = av_get({"function": "GLOBAL_QUOTE", "symbol": symbol})
-    q = data.get("Global Quote", {})
-    if not q:
+    try:
+        r = requests.get(AV_BASE, params=params, timeout=15)
+        d = r.json()
+        if "Note" in d or "Information" in d:
+            return {}
+        return d
+    except:
         return {}
+
+def fetch_quote(symbol):
+    d = av_get({"function": "GLOBAL_QUOTE", "symbol": symbol})
+    q = d.get("Global Quote", {})
+    if not q: return {}
     return {
-        "symbol":   q.get("01. symbol", symbol),
-        "price":    float(q.get("05. price", 0)),
-        "open":     float(q.get("02. open", 0)),
-        "high":     float(q.get("03. high", 0)),
-        "low":      float(q.get("04. low", 0)),
-        "volume":   int(q.get("06. volume", 0)),
-        "prev":     float(q.get("08. previous close", 0)),
-        "change":   float(q.get("09. change", 0)),
-        "chg_pct":  q.get("10. change percent", "0%").replace("%", ""),
-        "date":     q.get("07. latest trading day", ""),
+        "price":   float(q.get("05. price", 0)),
+        "change":  float(q.get("09. change", 0)),
+        "chg_pct": q.get("10. change percent", "0%").replace("%",""),
+        "volume":  int(q.get("06. volume", 0)),
+        "high":    float(q.get("03. high", 0)),
+        "low":     float(q.get("04. low", 0)),
     }
 
-def fetch_news(ticker: str, limit: int = 5) -> list:
-    """Fetch news sentiment for a ticker."""
-    data = av_get({"function": "NEWS_SENTIMENT", "tickers": ticker, "limit": str(limit)})
-    feed = data.get("feed", [])
-    results = []
+def fetch_crypto(symbol):
+    d = av_get({"function": "CURRENCY_EXCHANGE_RATE",
+                "from_currency": symbol, "to_currency": "USD"})
+    r = d.get("Realtime Currency Exchange Rate", {})
+    if not r: return {}
+    return {"price": float(r.get("5. Exchange Rate", 0))}
+
+def fetch_news(ticker, limit=4):
+    d = av_get({"function": "NEWS_SENTIMENT", "tickers": ticker, "limit": str(limit)})
+    feed = d.get("feed", [])
+    out = []
     for item in feed[:limit]:
-        # find ticker-specific sentiment
-        sent_score = 0.0
-        sent_label = "Neutral"
+        score = 0.0
         for ts in item.get("ticker_sentiment", []):
-            if ts.get("ticker", "").upper() == ticker.upper():
-                sent_score = float(ts.get("ticker_sentiment_score", 0))
-                sent_label = ts.get("ticker_sentiment_label", "Neutral")
+            if ts.get("ticker","").upper() == ticker.upper():
+                score = float(ts.get("ticker_sentiment_score", 0))
                 break
-        results.append({
-            "title":   item.get("title", ""),
-            "summary": item.get("summary", "")[:220],
-            "source":  item.get("source", ""),
-            "time":    item.get("time_published", ""),
-            "sentiment_score": sent_score,
-            "sentiment_label": sent_label,
-        })
-    return results
-
-def fetch_put_call(symbol: str) -> dict:
-    """Fetch realtime put/call ratio."""
-    data = av_get({"function": "REALTIME_PUT_CALL_RATIO", "symbol": symbol})
-    payload = data.get("payload", {})
-    if not payload:
-        return {}
-    overall = payload.get("overall", {})
-    return {
-        "ratio":  overall.get("put_call_ratio", "N/A"),
-        "signal": overall.get("signal", "N/A"),
-        "puts":   overall.get("total_put_volume", "N/A"),
-        "calls":  overall.get("total_call_volume", "N/A"),
-    }
-
-def fetch_crypto_price(symbol: str) -> dict:
-    """Fetch crypto price via CURRENCY_EXCHANGE_RATE."""
-    data = av_get({"function": "CURRENCY_EXCHANGE_RATE",
-                   "from_currency": symbol, "to_currency": "USD"})
-    r = data.get("Realtime Currency Exchange Rate", {})
-    if not r:
-        return {}
-    return {
-        "symbol": symbol,
-        "price":  float(r.get("5. Exchange Rate", 0)),
-        "bid":    float(r.get("8. Bid Price", 0)),
-        "ask":    float(r.get("9. Ask Price", 0)),
-        "date":   r.get("6. Last Refreshed", ""),
-    }
-
-def fetch_earnings_calendar(symbol: str) -> str:
-    """Get next earnings date."""
-    data = av_get({"function": "EARNINGS", "symbol": symbol})
-    qtly = data.get("quarterlyEarnings", [])
-    if qtly:
-        # Most recent entry with a reportedDate in the future
-        today = datetime.date.today().isoformat()
-        for q in qtly:
-            rd = q.get("reportedDate", "")
-            if rd > today:
-                return rd
-    return STOCK_META.get(symbol, {}).get("earn", "TBD")
-
-def collect_all_data() -> dict:
-    """Fetch all portfolio data from Alpha Vantage."""
-    print("\n📡 Fetching live market data...")
-    result = {"stocks": {}, "crypto": {}, "date": datetime.date.today().isoformat()}
-
-    # Stocks
-    for sym in STOCKS:
-        print(f"  Fetching {sym}...")
-        q = fetch_quote(sym)
-        news = fetch_news(sym, 5)
-        pc = {}
-        if sym in ("MU", "NOW", "PLTR"):   # options exist for these
-            pc = fetch_put_call(sym)
-        result["stocks"][sym] = {
-            "quote": q,
-            "news":  news,
-            "put_call": pc,
-            "earnings": STOCK_META[sym]["earn"],
-        }
-        time.sleep(1)   # respect rate limits
-
-    # Crypto
-    for sym in CRYPTOS:
-        print(f"  Fetching {sym}...")
-        price = fetch_crypto_price(sym)
-        news  = fetch_news(f"CRYPTO:{sym}", 3)
-        result["crypto"][sym] = {"price": price, "news": news}
-        time.sleep(1)
-
-    print("✅ Data collection complete.\n")
-    return result
-
-# ── PDF BUILDER ──────────────────────────────────────────────
-
-def b64font(path):
-    with open(path, "rb") as f:
-        return base64.b64encode(f.read()).decode()
+        out.append({"title": item.get("title","")[:120], "score": score})
+    return out
 
 def fmt_price(p, sym=""):
-    """Format price nicely."""
-    if p == 0:
-        return "N/A"
-    if sym in CRYPTOS and p < 0.01:
-        return f"${p:.8f}"
-    if sym in CRYPTOS and p < 1:
-        return f"${p:.4f}"
+    if p == 0: return "N/A"
+    if p < 0.0001: return f"${p:.8f}"
+    if p < 1: return f"${p:.4f}"
     return f"${p:,.2f}"
 
 def fmt_vol(v):
-    if v == 0: return "N/A"
     if v >= 1_000_000: return f"{v/1_000_000:.2f}M"
     if v >= 1_000: return f"{v/1_000:.0f}K"
     return str(v)
 
-def sentiment_color(label):
-    label = label.lower()
-    if "bearish" in label and "somewhat" not in label: return "#dc2626"
-    if "somewhat-bearish" in label or "somewhat_bearish" in label: return "#f97316"
-    if "bullish" in label and "somewhat" not in label: return "#16a34a"
-    if "somewhat" in label and "bullish" in label: return "#22c55e"
-    return "#6b7280"
+def collect_data():
+    print("📡 Fetching live market data...")
+    data = {"stocks": {}, "crypto": {}}
 
-def sentiment_ar(label):
-    label = label.lower()
-    if "bearish" in label and "somewhat" not in label: return "سلبي"
-    if "somewhat" in label and "bearish" in label: return "سلبي نسبياً"
-    if "bullish" in label and "somewhat" not in label: return "إيجابي"
-    if "somewhat" in label and "bullish" in label: return "إيجابي نسبياً"
-    return "محايد"
+    for s in PORTFOLIO["stocks"]:
+        sym = s["sym"]
+        print(f"  {sym}...")
+        q    = fetch_quote(sym)
+        news = fetch_news(sym, 4)
+        data["stocks"][sym] = {"quote": q, "news": news}
+        time.sleep(1.2)
 
-def pc_signal_ar(signal):
-    s = str(signal).lower()
-    if "bullish" in s: return "إيجابي"
-    if "bearish" in s: return "سلبي"
-    return "محايد"
+    for c in PORTFOLIO["crypto"]:
+        sym = c["sym"]
+        print(f"  {sym}...")
+        price = fetch_crypto(sym)
+        news  = fetch_news(f"CRYPTO:{sym}", 3)
+        data["crypto"][sym] = {"price": price, "news": news}
+        time.sleep(1.2)
 
+    print("✅ Data collected.\n")
+    return data
+
+# ── CSS (shared light theme) ──────────────────────────────────
 def build_css(am, amb, dv, dvb):
     return f"""
 @font-face{{font-family:'AM';src:url('data:font/ttf;base64,{am}');font-weight:400}}
@@ -233,771 +132,803 @@ def build_css(am, amb, dv, dvb):
 @font-face{{font-family:'DV';src:url('data:font/ttf;base64,{dv}');font-weight:400}}
 @font-face{{font-family:'DV';src:url('data:font/ttf;base64,{dvb}');font-weight:700}}
 *{{margin:0;padding:0;box-sizing:border-box}}
-body{{background:#eef2f7;color:#1a2332;width:1240px}}
-.ar{{font-family:'AM',serif;font-size:13.5px;direction:rtl;unicode-bidi:embed}}
-.en{{font-family:'DV',sans-serif;font-size:12.5px;direction:ltr}}
+body{{background:#eef2f7;width:1240px}}
+.ar{{font-family:'AM',serif;font-size:13.5px;direction:rtl;unicode-bidi:embed;color:#1a2332}}
+.en{{font-family:'DV',sans-serif;font-size:12.5px;direction:ltr;color:#1a2332}}
 .num{{font-family:'DV',sans-serif}}
-.page{{width:1240px;padding:34px 42px;background:#eef2f7;page-break-after:always;min-height:1754px}}
-
-/* Header */
-.hdr{{background:linear-gradient(135deg,#0f2d5a 0%,#1d4ed8 65%,#2563eb 100%);
-      border-radius:16px;padding:28px 36px;margin-bottom:20px;
-      display:flex;justify-content:space-between;align-items:center;
-      box-shadow:0 6px 28px rgba(29,78,216,0.28)}}
-.hdr-badge{{background:rgba(255,255,255,0.18);border:1px solid rgba(255,255,255,0.35);
-            border-radius:20px;padding:3px 14px;font-size:10px;
-            color:rgba(255,255,255,0.92);margin-bottom:7px;display:inline-block}}
-.hdr-title{{font-size:24px;font-weight:700;color:#fff;margin-bottom:4px;line-height:1.25}}
-.hdr-sub{{font-size:11.5px;color:rgba(255,255,255,0.72)}}
-.hdr-date{{font-size:19px;font-weight:700;color:#fff}}
-.hdr-time{{font-size:11px;color:rgba(255,255,255,0.68);margin-top:4px}}
-.hdr-pill{{background:rgba(255,255,255,0.2);border-radius:10px;padding:4px 12px;
-           font-size:10px;color:#fff;display:inline-block;margin-top:7px}}
-
-/* Section */
-.sec{{font-size:13.5px;font-weight:700;color:#0f2d5a;padding:8px 0 7px;
-      border-bottom:2px solid #c7d9f0;margin:18px 0 12px;
-      display:flex;align-items:center;gap:8px}}
+.page{{width:1240px;padding:32px 40px;background:#eef2f7;page-break-after:always;min-height:1754px}}
+.hdr{{background:linear-gradient(135deg,#0f2d5a,#1d4ed8,#2563eb);border-radius:16px;
+      padding:26px 34px;margin-bottom:18px;display:flex;justify-content:space-between;
+      align-items:center;box-shadow:0 6px 28px rgba(29,78,216,.28)}}
+.hdr-badge{{background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.35);
+            border-radius:20px;padding:3px 12px;font-size:10px;color:rgba(255,255,255,.92);
+            margin-bottom:6px;display:inline-block}}
+.hdr-title{{font-size:22px;font-weight:700;color:#fff;margin-bottom:4px}}
+.hdr-sub{{font-size:11px;color:rgba(255,255,255,.72)}}
+.sec{{font-size:13px;font-weight:700;color:#0f2d5a;padding:8px 0 7px;
+      border-bottom:2px solid #c7d9f0;margin:16px 0 11px;
+      display:flex;align-items:center;gap:7px}}
 .sec-ar{{flex-direction:row-reverse}}
 .dot{{width:7px;height:7px;border-radius:50%;background:#1d4ed8;flex-shrink:0}}
-
-/* Alerts */
-.alert{{border-radius:11px;padding:12px 16px;margin-bottom:14px;
-        display:flex;align-items:flex-start;gap:11px}}
-.alert-ar{{flex-direction:row-reverse}}
-.a-red{{background:#fff5f5;border:1.5px solid #feb2b2;border-right:4px solid #e53e3e}}
-.a-amber{{background:#fffdf0;border:1.5px solid #fbd38d;border-right:4px solid #dd6b20}}
-.a-blue{{background:#ebf8ff;border:1.5px solid #bee3f8;border-right:4px solid #3182ce}}
-.a-icon{{font-size:18px;margin-top:2px;flex-shrink:0}}
-.a-title{{font-weight:700;font-size:12.5px;margin-bottom:3px}}
-.a-red .a-title{{color:#c53030}}
-.a-amber .a-title{{color:#7b341e}}
-.a-blue .a-title{{color:#2a4365}}
-.a-body{{font-size:11.5px;color:#4a5568;line-height:1.65}}
-
-/* Grids */
-.g2{{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px}}
-.g3{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px}}
-.g4{{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:9px;margin-bottom:12px}}
-
-/* Card */
-.card{{background:#fff;border-radius:12px;padding:14px 16px;border:1px solid #dde5f0;
-       box-shadow:0 2px 8px rgba(0,0,0,0.05)}}
-.c-lbl{{font-size:10px;color:#718096;text-transform:uppercase;letter-spacing:0.7px;margin-bottom:7px}}
-.c-val{{font-size:24px;font-weight:700;color:#0f2d5a;line-height:1;font-family:'DV',sans-serif}}
-.c-sub{{font-size:10px;color:#718096;margin-top:3px;font-family:'DV',sans-serif}}
-.card p{{font-size:11.5px;color:#2d3748;line-height:1.65;margin-top:7px}}
-.pill{{font-size:9px;font-weight:700;padding:2px 8px;border-radius:9px;display:inline-block;margin-top:5px}}
-.p-red{{background:#fed7d7;color:#c53030}}
-.p-green{{background:#c6f6d5;color:#276749}}
-.p-blue{{background:#bee3f8;color:#2a4365}}
-.p-amber{{background:#fef3c7;color:#7b341e}}
-.p-gray{{background:#e5e7eb;color:#374151}}
-.pos{{color:#276749;font-weight:700}}
-.neg{{color:#c53030;font-weight:700}}
-.hl{{color:#2b6cb0;font-weight:700}}
-.warn{{color:#c05621;font-weight:700}}
-
-/* Strip */
-.strip{{display:flex;gap:2px;margin-bottom:18px;border-radius:12px;overflow:hidden;
-        box-shadow:0 2px 8px rgba(0,0,0,0.07)}}
-.sc{{flex:1;padding:12px 8px;text-align:center}}
-.sv{{font-size:18px;font-weight:700;font-family:'DV',sans-serif}}
+.g2{{display:grid;grid-template-columns:1fr 1fr;gap:11px;margin-bottom:11px}}
+.g3{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:11px}}
+.g4{{display:grid;grid-template-columns:1fr 1fr 1fr 1fr;gap:9px;margin-bottom:11px}}
+.card{{background:#fff;border-radius:11px;padding:13px 15px;border:1px solid #dde5f0;
+       box-shadow:0 2px 8px rgba(0,0,0,.05)}}
+.pos{{color:#276749;font-weight:700}}.neg{{color:#c53030;font-weight:700}}
+.hl{{color:#2b6cb0;font-weight:700}}.warn{{color:#c05621;font-weight:700}}
+.strip{{display:flex;gap:2px;margin-bottom:16px;border-radius:11px;overflow:hidden;
+        box-shadow:0 2px 8px rgba(0,0,0,.07)}}
+.sc{{flex:1;padding:11px 8px;text-align:center}}
+.sv{{font-size:17px;font-weight:700;font-family:'DV',sans-serif}}
 .sl{{font-size:9px;color:#718096;margin-top:2px;font-family:'DV',sans-serif}}
-
-/* Stock card */
-.scard{{background:#fff;border-radius:12px;border:1px solid #dde5f0;
-        box-shadow:0 2px 10px rgba(0,0,0,0.06);overflow:hidden;margin-bottom:12px}}
-.scard-top{{padding:13px 16px;border-bottom:1px solid #f0f4f8}}
-.scard-sym{{font-size:20px;font-weight:700}}
-.scard-name{{font-size:10.5px;color:#718096;margin-top:1px}}
+.scard{{background:#fff;border-radius:11px;border:1px solid #dde5f0;
+        box-shadow:0 2px 8px rgba(0,0,0,.05);overflow:hidden;margin-bottom:11px}}
+.scard-top{{padding:12px 15px;border-bottom:1px solid #f0f4f8}}
+.scard-sym{{font-size:19px;font-weight:700}}
+.scard-name{{font-size:10px;color:#718096;margin-top:1px}}
 .scard-row{{display:flex;justify-content:space-between;align-items:center}}
-.scard-price{{font-size:19px;font-weight:700;color:#0f2d5a;font-family:'DV',sans-serif}}
-.scard-meta{{padding:8px 16px;background:#f8faff;display:flex;gap:8px;flex-wrap:wrap}}
-.stag{{background:#e5e7eb;border-radius:4px;padding:2px 7px;font-size:10px;color:#374151}}
-.stag-earn{{background:#fef3c7;border-radius:4px;padding:2px 7px;font-size:10px;color:#92400e}}
-.stag-sent{{border-radius:4px;padding:2px 7px;font-size:10px;font-weight:700}}
-.scard-news{{padding:10px 16px}}
-.scard-news ul{{padding-left:14px;list-style:disc}}
-.scard-news ul.ar-list{{padding-right:14px;padding-left:0;list-style:disc}}
-.scard-news li{{font-size:11px;color:#4a5568;margin-bottom:4px;line-height:1.55}}
-.scard-pc{{padding:8px 16px;border-top:1px solid #f0f4f8;display:flex;gap:10px;
-           align-items:center;background:#fafbff}}
-.pc-lbl{{font-size:10px;color:#718096}}
-.pc-val{{font-size:12px;font-weight:700;font-family:'DV',sans-serif}}
-
-/* Crypto card */
-.ccard{{background:#fff;border-radius:10px;padding:12px 14px;border:1px solid #dde5f0;
-        box-shadow:0 2px 6px rgba(0,0,0,0.05)}}
+.scard-price{{font-size:18px;font-weight:700;color:#0f2d5a;font-family:'DV',sans-serif}}
+.scard-meta{{padding:7px 15px;background:#f8faff;display:flex;gap:7px;flex-wrap:wrap}}
+.stag{{background:#e5e7eb;border-radius:4px;padding:2px 6px;font-size:9.5px;color:#374151}}
+.stag-e{{background:#fef3c7;border-radius:4px;padding:2px 6px;font-size:9.5px;color:#92400e}}
+.stag-s{{border-radius:4px;padding:2px 6px;font-size:9.5px;font-weight:700}}
+.stag-buy{{background:#dcfce7;border-radius:4px;padding:2px 6px;font-size:9.5px;color:#166534;font-weight:700}}
+.stag-loss{{background:#fee2e2;border-radius:4px;padding:2px 6px;font-size:9.5px;color:#991b1b;font-weight:700}}
+.scard-news{{padding:9px 15px}}
+.scard-news ul{{padding-left:13px;list-style:disc}}
+.scard-news ul.ar{{padding-right:13px;padding-left:0;list-style:disc}}
+.scard-news li{{font-size:10.5px;color:#4a5568;margin-bottom:3px;line-height:1.5}}
+.pnl-box{{padding:9px 15px;border-top:1px solid #f0f4f8;background:#fafbff;
+           display:flex;gap:16px;align-items:center}}
+.pnl-lbl{{font-size:10px;color:#718096}}
+.pnl-val{{font-size:13px;font-weight:700;font-family:'DV',sans-serif}}
+.ccard{{background:#fff;border-radius:10px;padding:11px 13px;border:1px solid #dde5f0;
+        box-shadow:0 2px 6px rgba(0,0,0,.05)}}
 .ccard-sym{{font-size:14px;font-weight:700}}
-.ccard-price{{font-size:13px;font-weight:700;color:#0f2d5a;font-family:'DV',sans-serif;margin-top:3px}}
-.ccard-cat{{font-size:9px;font-weight:700;padding:2px 6px;border-radius:4px;
-            display:inline-block;margin:3px 0 5px}}
-.ccard-note{{font-size:10.5px;color:#718096;line-height:1.45}}
-
-/* Bar chart */
-.bc{{background:#fff;border-radius:12px;padding:15px 17px;border:1px solid #dde5f0;
-     box-shadow:0 2px 8px rgba(0,0,0,0.05)}}
-.bc-t{{font-size:12px;font-weight:700;color:#0f2d5a;margin-bottom:11px}}
-.brow{{display:flex;align-items:center;gap:9px;margin-bottom:8px}}
+.ccard-price{{font-size:12px;font-weight:700;color:#0f2d5a;font-family:'DV',sans-serif;margin-top:2px}}
+.ccard-cat{{font-size:9px;font-weight:700;padding:2px 5px;border-radius:3px;
+            display:inline-block;margin:3px 0 4px}}
+.bc{{background:#fff;border-radius:11px;padding:13px 15px;border:1px solid #dde5f0;box-shadow:0 2px 8px rgba(0,0,0,.05)}}
+.bc-t{{font-size:11.5px;font-weight:700;color:#0f2d5a;margin-bottom:10px}}
+.brow{{display:flex;align-items:center;gap:8px;margin-bottom:7px}}
 .brow-ar{{flex-direction:row-reverse}}
-.blbl{{font-size:11px;color:#2d3748;min-width:58px}}
-.btrack{{flex:1;background:#f0f4f8;border-radius:4px;height:18px;overflow:hidden}}
-.bfill{{height:100%;border-radius:4px;display:flex;align-items:center;padding:0 7px;justify-content:flex-end}}
-.bval{{font-size:9.5px;font-weight:700;color:#fff;font-family:'DV',sans-serif}}
-
-/* Donut */
-.dw{{display:flex;align-items:center;justify-content:center;gap:18px}}
-.dleg{{display:flex;flex-direction:column;gap:9px}}
-.di{{display:flex;align-items:center;gap:7px}}
-.di-ar{{flex-direction:row-reverse}}
-.dd{{width:10px;height:10px;border-radius:50%;flex-shrink:0}}
-.dt{{font-size:11.5px;color:#2d3748}}
-.dp{{font-size:10px;color:#718096;font-family:'DV',sans-serif}}
-
-/* Calendar */
-.cal-g{{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px}}
-.cal{{background:#fff;border-radius:9px;padding:11px;border:1px solid #dde5f0;
-      text-align:center;box-shadow:0 1px 5px rgba(0,0,0,0.05)}}
+.blbl{{font-size:10.5px;color:#2d3748;min-width:52px}}
+.btrack{{flex:1;background:#f0f4f8;border-radius:4px;height:17px;overflow:hidden}}
+.bfill{{height:100%;border-radius:4px;display:flex;align-items:center;padding:0 6px;justify-content:flex-end}}
+.bval{{font-size:9px;font-weight:700;color:#fff;font-family:'DV',sans-serif}}
+.tbl{{width:100%;border-collapse:separate;border-spacing:0;margin-bottom:11px;
+      border-radius:9px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,.06)}}
+.tbl th{{background:#0f2d5a;color:#fff;font-size:10px;font-weight:700;padding:8px 11px}}
+.tbl td{{padding:8px 11px;font-size:11.5px;color:#2d3748;background:#fff;border-bottom:1px solid #f0f4f8}}
+.tbl tr:last-child td{{border-bottom:none}}
+.tbl tr:nth-child(even) td{{background:#f7faff}}
+.bline{{background:linear-gradient(135deg,#0f2d5a,#1d4ed8);border-radius:12px;
+        padding:17px 21px;margin-bottom:15px;box-shadow:0 6px 20px rgba(29,78,216,.22)}}
+.bline h3{{color:#fff;font-size:13px;margin-bottom:7px;font-weight:700}}
+.bline p{{font-size:12px;color:rgba(255,255,255,.90);line-height:1.75}}
+.cal-g{{display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:11px}}
+.cal{{background:#fff;border-radius:9px;padding:10px;border:1px solid #dde5f0;text-align:center}}
 .cal.hot{{border-color:#fca5a5;background:linear-gradient(135deg,#fff5f5,#ffe8e8)}}
 .cal.warm{{border-color:#fbd38d;background:linear-gradient(135deg,#fffdf0,#fef3c7)}}
 .cal.cool{{border-color:#bee3f8;background:linear-gradient(135deg,#ebf8ff,#dde9f5)}}
-.cal-d{{font-size:9.5px;color:#718096;margin-bottom:3px;font-family:'DV',sans-serif}}
-.cal-e{{font-size:10.5px;color:#0f2d5a;font-weight:700;line-height:1.3}}
-
-/* Table */
-.tbl{{width:100%;border-collapse:separate;border-spacing:0;margin-bottom:12px;
-      border-radius:9px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.06)}}
-.tbl th{{background:#0f2d5a;color:#fff;font-size:10px;font-weight:700;padding:9px 12px}}
-.tbl td{{padding:8px 12px;font-size:11.5px;color:#2d3748;background:#fff;border-bottom:1px solid #f0f4f8}}
-.tbl tr:last-child td{{border-bottom:none}}
-.tbl tr:nth-child(even) td{{background:#f7faff}}
-
-/* Bottom line */
-.bline{{background:linear-gradient(135deg,#0f2d5a,#1d4ed8);border-radius:13px;
-        padding:18px 22px;margin-bottom:16px;box-shadow:0 6px 20px rgba(29,78,216,0.22)}}
-.bline h3{{color:#fff;font-size:13px;margin-bottom:8px;font-weight:700}}
-.bline p{{font-size:12px;color:rgba(255,255,255,0.90);line-height:1.75}}
-
-/* Footer */
-.footer{{text-align:center;color:#a0aec0;font-size:10px;padding:10px 0;
+.cal-d{{font-size:9px;color:#718096;margin-bottom:3px;font-family:'DV',sans-serif}}
+.cal-e{{font-size:10px;color:#0f2d5a;font-weight:700;line-height:1.3}}
+.opp{{background:linear-gradient(135deg,#f0fff4,#dcfce7);border:1.5px solid #86efac;
+      border-radius:11px;padding:13px 15px;margin-bottom:10px}}
+.opp-t{{font-size:12.5px;font-weight:700;color:#065f46;margin-bottom:5px}}
+.opp p{{font-size:11.5px;color:#374151;line-height:1.65}}
+.sc3{{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:12px}}
+.scn{{border-radius:11px;padding:13px 15px;border:1.5px solid}}
+.s-bull{{background:linear-gradient(135deg,#f0fff4,#e6ffed);border-color:#9ae6b4}}
+.s-base{{background:linear-gradient(135deg,#ebf8ff,#e3f0ff);border-color:#bee3f8}}
+.s-bear{{background:linear-gradient(135deg,#fff5f5,#ffe8e8);border-color:#fca5a5}}
+.sn-t{{font-size:12px;font-weight:700;margin-bottom:5px}}
+.s-bull .sn-t{{color:#276749}}.s-base .sn-t{{color:#2a4365}}.s-bear .sn-t{{color:#c53030}}
+.scn p{{font-size:11px;color:#2d3748;line-height:1.65}}
+.prob{{font-size:10px;font-weight:700;padding:2px 9px;border-radius:9px;
+       display:inline-block;margin-bottom:6px;font-family:'DV',sans-serif}}
+.s-bull .prob{{background:#c6f6d5;color:#276749}}
+.s-base .prob{{background:#bee3f8;color:#2a4365}}
+.s-bear .prob{{background:#fed7d7;color:#c53030}}
+.alert{{border-radius:10px;padding:11px 15px;margin-bottom:13px;display:flex;gap:10px}}
+.alert-ar{{flex-direction:row-reverse}}
+.a-r{{background:#fff5f5;border:1.5px solid #feb2b2;border-right:4px solid #e53e3e}}
+.a-a{{background:#fffdf0;border:1.5px solid #fbd38d;border-right:4px solid #dd6b20}}
+.a-b{{background:#ebf8ff;border:1.5px solid #bee3f8;border-right:4px solid #3182ce}}
+.a-icon{{font-size:18px;flex-shrink:0}}
+.a-title{{font-weight:700;font-size:12.5px;margin-bottom:3px}}
+.a-r .a-title{{color:#c53030}}.a-a .a-title{{color:#7b341e}}.a-b .a-title{{color:#2a4365}}
+.a-body{{font-size:11.5px;color:#4a5568;line-height:1.65}}
+.footer{{text-align:center;color:#a0aec0;font-size:9.5px;padding:9px 0;
          border-top:1px solid #dde5f0;font-family:'DV',sans-serif}}
+.total-row{{background:linear-gradient(135deg,#0f2d5a,#1d4ed8);border-radius:10px;
+            padding:14px 18px;display:flex;justify-content:space-around;
+            margin-bottom:14px;box-shadow:0 4px 16px rgba(29,78,216,.2)}}
+.tot-item{{text-align:center}}
+.tot-val{{font-size:20px;font-weight:700;color:#fff;font-family:'DV',sans-serif}}
+.tot-lbl{{font-size:10px;color:rgba(255,255,255,.72);margin-top:3px}}
 """
 
-# ── HTML BUILDERS ─────────────────────────────────────────────
+# ════════════════════════════════════════════════════════════
+# PDF 1: ARABIC PORTFOLIO (محفظة سيف)
+# ════════════════════════════════════════════════════════════
+def build_portfolio_ar(data, date_str, am, amb, dv, dvb):
+    css = build_css(am, amb, dv, dvb)
+    port = PORTFOLIO
 
-def build_part1_ar(data, today_str):
-    stocks = data["stocks"]
-    date_ar = today_str
+    # Calculate totals
+    s_cost = s_val = 0
+    for s in port["stocks"]:
+        q = data["stocks"][s["sym"]].get("quote", {})
+        cur = q.get("price", s["buy"])
+        s_cost += s["qty"] * s["buy"]
+        s_val  += s["qty"] * cur
 
-    # Sentiment bar chart data
-    sent_rows = ""
-    for sym in STOCKS:
-        q = stocks[sym].get("quote", {})
-        news = stocks[sym].get("news", [])
-        avg_sent = sum(n["sentiment_score"] for n in news) / len(news) if news else 0
-        chg = float(q.get("chg_pct", 0)) if q else 0
-        color = STOCK_META[sym]["color"]
-        w = min(abs(chg) * 4.5, 90)
-        sign = "▲" if chg >= 0 else "▼"
-        c = "#276749" if chg >= 0 else "#c53030"
-        sent_rows += f"""<div class="brow brow-ar">
-          <div class="blbl" style="text-align:right;font-weight:700;color:{color}">{sym}</div>
-          <div class="btrack" style="background:{'#f0fff4' if chg>=0 else '#fff5f5'}">
-            <div class="bfill" style="width:{w}%;background:{c}">
-              <span class="bval">{sign}{abs(chg):.2f}%</span>
-            </div>
-          </div>
-        </div>"""
+    c_cost = c_val = 0
+    for c in port["crypto"]:
+        p = data["crypto"][c["sym"]].get("price", {})
+        cur = p.get("price", c["buy"])
+        c_cost += c["qty"] * c["buy"]
+        c_val  += c["qty"] * cur
 
-    # Stock summary cards
+    t_cost = s_cost + c_cost
+    t_val  = s_val  + c_val
+    t_pnl  = t_val  - t_cost
+    t_pct  = (t_pnl / t_cost) * 100 if t_cost else 0
+
+    def pnl_color(v): return "#c53030" if v < 0 else "#276749"
+    def arrow(v): return "▼" if v < 0 else "▲"
+
+    # Stock cards
     stock_cards = ""
-    for sym in STOCKS:
-        m = STOCK_META[sym]
-        q = stocks[sym].get("quote", {})
-        news = stocks[sym].get("news", [])
-        pc = stocks[sym].get("put_call", {})
-        earn = stocks[sym].get("earnings", m["earn"])
-
-        price  = fmt_price(q.get("price", 0))
-        chg    = float(q.get("chg_pct", 0)) if q else 0
-        vol    = fmt_vol(q.get("volume", 0))
-        hi     = fmt_price(q.get("high", 0))
-        lo     = fmt_price(q.get("low", 0))
-        arrow  = "▲" if chg >= 0 else "▼"
-        chg_c  = "pos" if chg >= 0 else "neg"
-        sent_avg = sum(n["sentiment_score"] for n in news)/len(news) if news else 0
-        sent_lbl_ar = sentiment_ar("bullish" if sent_avg > 0.15 else ("bearish" if sent_avg < -0.15 else "neutral"))
-        sent_col = sentiment_color("bullish" if sent_avg > 0.15 else ("bearish" if sent_avg < -0.15 else "neutral"))
-
-        # news items in Arabic (use summary)
-        news_html = ""
-        for n in news[:4]:
-            news_html += f"<li>{n['title'][:110]}</li>"
-
-        pc_html = ""
-        if pc:
-            ratio = pc.get("ratio", "N/A")
-            sig_ar = pc_signal_ar(pc.get("signal", ""))
-            pc_html = f"""<div class="scard-pc">
-              <span class="pc-lbl">نسبة Put/Call:</span>
-              <span class="pc-val">{ratio}</span>
-              <span class="stag-sent" style="background:{sent_col}20;color:{sent_col};margin-right:8px">{sig_ar}</span>
-            </div>"""
+    for s in port["stocks"]:
+        sym = s["sym"]
+        q = data["stocks"][sym].get("quote", {})
+        news = data["stocks"][sym].get("news", [])
+        cur = q.get("price", s["buy"])
+        chg_pct = float(q.get("chg_pct", 0))
+        vol = fmt_vol(q.get("volume", 0))
+        cost  = s["qty"] * s["buy"]
+        val   = s["qty"] * cur
+        pnl   = val - cost
+        pnl_p = (pnl / cost) * 100 if cost else 0
+        col   = s["color"]
+        news_html = "".join(f"<li>{n['title']}</li>" for n in news[:4])
+        chg_col = pnl_color(chg_pct)
 
         stock_cards += f"""
-        <div class="scard" style="border-top:3px solid {m['color']};direction:rtl">
-          <div class="scard-top">
-            <div class="scard-row" style="flex-direction:row-reverse">
-              <div style="text-align:right">
-                <div class="scard-sym" style="color:{m['color']}">{sym}</div>
-                <div class="scard-name">{m['name_ar']}</div>
-              </div>
-              <div style="text-align:left">
-                <div class="scard-price">{price}</div>
-                <div class="{chg_c}" style="font-family:'DV',sans-serif;font-size:12px">{arrow} {abs(chg):.2f}% &nbsp;|&nbsp; حجم: {vol}</div>
-              </div>
-            </div>
-          </div>
-          <div class="scard-meta" style="flex-direction:row-reverse">
-            <span class="stag">أعلى: {hi}</span>
-            <span class="stag">أدنى: {lo}</span>
-            <span class="stag-earn">⚠ الأرباح: {earn}</span>
-            <span class="stag-sent" style="background:{sent_col}20;color:{sent_col}">المعنويات: {sent_lbl_ar}</span>
-          </div>
-          <div class="scard-news">
-            <ul class="ar-list">{news_html}</ul>
-          </div>
-          {pc_html}
-        </div>"""
-
-    return f"""
-<div class="page ar">
-  <div class="hdr" style="flex-direction:row-reverse">
-    <div style="text-align:right">
-      <div class="hdr-badge">التقرير الصباحي · الجزء 1 من 2 · الأسهم</div>
-      <div class="hdr-title">محفظتك — التقرير الصباحي</div>
-      <div class="hdr-sub">MU · NOW · PLTR · CBRS &nbsp;|&nbsp; XRP · SOL · HBAR · SHIB · ADA · ARB · DOT · GALA</div>
-    </div>
-    <div style="text-align:left">
-      <div class="hdr-date">{date_ar}</div>
-      <div class="hdr-time">2:30 ظهرًا · بتوقيت الخليج</div>
-      <div class="hdr-pill">بيانات مباشرة · Alpha Vantage</div>
+<div class="scard" style="border-top:3px solid #{col}">
+  <div class="scard-top">
+    <div class="scard-row" style="flex-direction:row-reverse">
+      <div style="text-align:right">
+        <div class="scard-sym" style="color:#{col}">{sym}</div>
+        <div class="scard-name">{s['name']}</div>
+      </div>
+      <div style="text-align:left">
+        <div class="scard-price">{fmt_price(cur)}</div>
+        <div style="font-family:DV;font-size:11px;color:{chg_col}">{arrow(chg_pct)} {abs(chg_pct):.2f}% &nbsp;|&nbsp; حجم: {vol}</div>
+      </div>
     </div>
   </div>
-
-  <div class="sec sec-ar"><div class="dot"></div>📈 الأسهم — أداء اليوم والأخبار</div>
-
-  <div class="g2">{stock_cards}</div>
-
-  <div class="sec sec-ar"><div class="dot"></div>📊 أداء الأسهم — مخطط التغيير اليومي</div>
-  <div class="bc">
-    <div class="bc-t" style="text-align:right">التغيير اليومي لأسهم المحفظة</div>
-    {sent_rows}
+  <div class="scard-meta" style="flex-direction:row-reverse">
+    <span class="stag">{s['qty']} سهم × {fmt_price(s['buy'])} دخول</span>
+    <span class="stag-e">⚠ الأرباح: {s['earn']}</span>
+    <span class="{'stag-buy' if pnl>=0 else 'stag-loss'}">{arrow(pnl_p)} {abs(pnl_p):.1f}%</span>
   </div>
-
-  <div class="footer">الجزء 1 من 2 · الأسهم · {today_str} · للأغراض المعلوماتية فقط · ليس نصيحة مالية</div>
+  <div class="scard-news"><ul class="ar">{news_html if news_html else '<li>لا أخبار متاحة حالياً</li>'}</ul></div>
+  <div class="pnl-box" style="flex-direction:row-reverse">
+    <div class="tot-item">
+      <div class="pnl-lbl">التكلفة</div>
+      <div class="pnl-val" style="color:#374151">{fmt_price(cost)}</div>
+    </div>
+    <div class="tot-item">
+      <div class="pnl-lbl">القيمة الحالية</div>
+      <div class="pnl-val" style="color:#0f2d5a">{fmt_price(val)}</div>
+    </div>
+    <div class="tot-item">
+      <div class="pnl-lbl">الربح / الخسارة</div>
+      <div class="pnl-val" style="color:{pnl_color(pnl)}">{'+' if pnl>=0 else ''}{fmt_price(pnl)}</div>
+    </div>
+  </div>
 </div>"""
 
-
-def build_part2_ar(data, today_str):
-    cryptos = data["crypto"]
-
-    # Crypto cards grid
+    # Crypto cards
     crypto_cards = ""
-    for sym in CRYPTOS:
-        m = CRYPTO_META[sym]
-        cdata = cryptos.get(sym, {})
-        price_data = cdata.get("price", {})
-        news = cdata.get("news", [])
-
-        price = fmt_price(price_data.get("price", 0), sym)
-        sent_avg = sum(n["sentiment_score"] for n in news)/len(news) if news else 0
-        sent_lbl_ar = sentiment_ar("bullish" if sent_avg > 0.15 else ("bearish" if sent_avg < -0.15 else "neutral"))
-        sent_col = sentiment_color("bullish" if sent_avg > 0.15 else ("bearish" if sent_avg < -0.15 else "neutral"))
-        cat_style = {
-            "بنية تحتية": "background:#dbeafe;color:#1e40af",
-            "مدفوعات":    "background:#dcfce7;color:#166534",
-            "الطبقة 2":   "background:#ede9fe;color:#6d28d9",
-            "ألعاب":       "background:#fef3c7;color:#92400e",
-            "ميم":         "background:#fee2e2;color:#991b1b",
-        }.get(m["cat"], "background:#f3f4f6;color:#374151")
-
-        news_html = ""
-        for n in news[:3]:
-            news_html += f"<div style='font-size:10.5px;color:#4a5568;margin-bottom:5px;line-height:1.5;border-right:3px solid {m['color']};padding-right:8px'>{n['title'][:100]}</div>"
+    cat_styles = {
+        "مدفوعات":   "background:#dcfce7;color:#166534",
+        "بنية تحتية":"background:#dbeafe;color:#1e40af",
+        "الطبقة 2":  "background:#ede9fe;color:#6d28d9",
+        "ميم":        "background:#fee2e2;color:#991b1b",
+        "ألعاب":      "background:#fef3c7;color:#92400e",
+    }
+    for c in port["crypto"]:
+        sym = c["sym"]
+        p = data["crypto"][sym].get("price", {})
+        news = data["crypto"][sym].get("news", [])
+        cur   = p.get("price", c["buy"])
+        cost  = c["qty"] * c["buy"]
+        val   = c["qty"] * cur
+        pnl   = val - cost
+        pnl_p = (pnl / cost) * 100 if cost else 0
+        col   = c["color"]
+        cs    = cat_styles.get(c["cat"], "")
+        news_html = "".join(f"<div style='font-size:10px;color:#4a5568;margin-bottom:3px;border-right:2px solid #{col};padding-right:6px'>{n['title'][:90]}</div>" for n in news[:3])
 
         crypto_cards += f"""
-        <div class="ccard" style="border-top:3px solid {m['color']};text-align:right">
-          <div class="ccard-sym" style="color:{m['color']}">{sym}</div>
-          <div style="font-size:10px;color:#718096">{m['name_ar']}</div>
-          <div class="ccard-price">{price}</div>
-          <div class="ccard-cat" style="{cat_style}">{m['cat']}</div>
-          <div style="margin-bottom:6px">
-            <span class="stag-sent" style="font-size:9px;padding:1px 6px;border-radius:4px;background:{sent_col}20;color:{sent_col}">المعنويات: {sent_lbl_ar}</span>
-          </div>
-          {news_html}
-        </div>"""
+<div class="ccard" style="border-top:3px solid #{col};text-align:right">
+  <div class="ccard-sym" style="color:#{col}">{sym}</div>
+  <div style="font-size:9px;color:#718096">{c['name']}</div>
+  <div class="ccard-price">{fmt_price(cur, sym)}</div>
+  <div class="ccard-cat" style="{cs}">{c['cat']}</div>
+  <div style="margin-bottom:5px">
+    <span style="font-size:10px;font-weight:700;color:{pnl_color(pnl_p)}">
+      {arrow(pnl_p)} {abs(pnl_p):.1f}% &nbsp;|&nbsp; {'+' if pnl>=0 else ''}{fmt_price(pnl)}
+    </span>
+  </div>
+  <div style="font-size:9px;color:#718096;margin-bottom:5px">
+    كمية: <span style="font-family:DV">{c['qty']:,.4f}</span> × <span style="font-family:DV">{fmt_price(c['buy'],sym)}</span>
+  </div>
+  {news_html if news_html else ''}
+</div>"""
 
-    # Action table
-    action_rows = ""
+    s_pnl  = s_val - s_cost
+    c_pnl  = c_val - c_cost
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>{css}</style></head>
+<body>
+<!-- PAGE 1: STOCKS -->
+<div class="page ar">
+<div class="hdr" style="flex-direction:row-reverse">
+  <div style="text-align:right">
+    <div class="hdr-badge">محفظة سيف الشخصية · الأسهم</div>
+    <div class="hdr-title">محفظتي — الأسهم</div>
+    <div class="hdr-sub">MU · NOW · PLTR · CBRS</div>
+  </div>
+  <div style="text-align:left">
+    <div style="font-size:18px;font-weight:700;color:#fff">{date_str}</div>
+    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">2:30 ظهرًا · بتوقيت الخليج</div>
+  </div>
+</div>
+
+<div class="total-row">
+  <div class="tot-item">
+    <div class="tot-val">{fmt_price(s_cost)}</div>
+    <div class="tot-lbl">إجمالي التكلفة</div>
+  </div>
+  <div class="tot-item">
+    <div class="tot-val">{fmt_price(s_val)}</div>
+    <div class="tot-lbl">القيمة الحالية</div>
+  </div>
+  <div class="tot-item">
+    <div class="tot-val" style="color:{pnl_color(s_pnl)}">{'+' if s_pnl>=0 else ''}{fmt_price(s_pnl)}</div>
+    <div class="tot-lbl">الربح / الخسارة</div>
+  </div>
+  <div class="tot-item">
+    <div class="tot-val" style="color:{pnl_color(s_pnl)}">{'+' if s_pnl>=0 else ''}{((s_val-s_cost)/s_cost*100):.1f}%</div>
+    <div class="tot-lbl">النسبة الإجمالية</div>
+  </div>
+</div>
+
+<div class="sec sec-ar"><div class="dot"></div>📈 الأسهم — الأداء والأخبار والربح/الخسارة</div>
+<div class="g2">{stock_cards}</div>
+
+<div class="footer">محفظة سيف الشخصية · الأسهم · {date_str} · للأغراض المعلوماتية فقط · ليس نصيحة مالية</div>
+</div>
+
+<!-- PAGE 2: CRYPTO -->
+<div class="page ar">
+<div class="hdr" style="flex-direction:row-reverse">
+  <div style="text-align:right">
+    <div class="hdr-badge">محفظة سيف الشخصية · الكريبتو</div>
+    <div class="hdr-title">محفظتي — الكريبتو</div>
+    <div class="hdr-sub">XRP · SOL · HBAR · SHIB · ADA · ARB · DOT · GALA</div>
+  </div>
+  <div style="text-align:left">
+    <div style="font-size:18px;font-weight:700;color:#fff">{date_str}</div>
+    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">2:30 ظهرًا · بتوقيت الخليج</div>
+  </div>
+</div>
+
+<div class="total-row">
+  <div class="tot-item">
+    <div class="tot-val">{fmt_price(c_cost)}</div>
+    <div class="tot-lbl">إجمالي التكلفة</div>
+  </div>
+  <div class="tot-item">
+    <div class="tot-val">{fmt_price(c_val)}</div>
+    <div class="tot-lbl">القيمة الحالية</div>
+  </div>
+  <div class="tot-item">
+    <div class="tot-val" style="color:{pnl_color(c_pnl)}">{'+' if c_pnl>=0 else ''}{fmt_price(c_pnl)}</div>
+    <div class="tot-lbl">الربح / الخسارة</div>
+  </div>
+  <div class="tot-item">
+    <div class="tot-val" style="color:{pnl_color(c_pnl)}">{'+' if c_pnl>=0 else ''}{((c_val-c_cost)/c_cost*100):.1f}%</div>
+    <div class="tot-lbl">النسبة الإجمالية</div>
+  </div>
+</div>
+
+<div class="sec sec-ar"><div class="dot"></div>₿ الكريبتو — الأسعار والأخبار والربح/الخسارة</div>
+<div class="g4">{crypto_cards}</div>
+
+<div class="sec sec-ar"><div class="dot"></div>💼 إجمالي المحفظة الكاملة</div>
+<div class="total-row">
+  <div class="tot-item">
+    <div class="tot-val">{fmt_price(t_cost)}</div>
+    <div class="tot-lbl">إجمالي الاستثمار</div>
+  </div>
+  <div class="tot-item">
+    <div class="tot-val">{fmt_price(t_val)}</div>
+    <div class="tot-lbl">إجمالي القيمة الحالية</div>
+  </div>
+  <div class="tot-item">
+    <div class="tot-val" style="color:{pnl_color(t_pnl)}">{'+' if t_pnl>=0 else ''}{fmt_price(t_pnl)}</div>
+    <div class="tot-lbl">إجمالي الربح / الخسارة</div>
+  </div>
+  <div class="tot-item">
+    <div class="tot-val" style="color:{pnl_color(t_pct)}">{'+' if t_pct>=0 else ''}{t_pct:.1f}%</div>
+    <div class="tot-lbl">العائد الإجمالي</div>
+  </div>
+</div>
+
+<div class="sec sec-ar"><div class="dot"></div>⚡ خطة العمل — توصياتي المباشرة</div>
+<table class="tbl" style="direction:rtl">
+<tr><th style="text-align:right">الأصل</th><th style="text-align:right">السعر</th><th style="text-align:right">ر/خ %</th><th style="text-align:right">التوصية</th></tr>"""
+
     actions = {
-        "MU": ("احتفظ · لا تضيف قبل الأرباح", "warn"),
-        "NOW": ("تراكم نحو 100-105", "pos"),
-        "PLTR": ("احتفظ · تراكم دون 120", "pos"),
-        "CBRS": ("احتفظ · راقب الإغلاق يوميًا", "neg"),
-        "XRP": ("احتفظ · إضافة صغيرة دون 0.45", "pos"),
-        "SOL": ("احتفظ · أساسيات قوية", "hl"),
-        "HBAR": ("احتفظ · ثقة عالية", "pos"),
-        "ADA": ("احتفظ · انتظر mainnet Q4", "hl"),
-        "ARB": ("احتفظ · آخر أولوية", "hl"),
-        "DOT": ("احتفظ بحياد", "hl"),
-        "SHIB": ("احتفظ فقط · لا إضافات", "neg"),
-        "GALA": ("احتفظ فقط · راقب الألعاب", "neg"),
+        "MU":   ("احتفظ · لا تضيف قبل الأرباح",  "warn"),
+        "NOW":  ("تراكم نحو 100-105",              "pos"),
+        "PLTR": ("احتفظ · تراكم دون 120",          "pos"),
+        "CBRS": ("احتفظ · راقب Form 4 يوميًا",    "neg"),
+        "XRP":  ("احتفظ · إضافة على الضعف",        "pos"),
+        "SOL":  ("احتفظ · أساسيات قوية",           "hl"),
+        "HBAR": ("احتفظ · ثقة عالية",              "pos"),
+        "SHIB": ("احتفظ فقط · لا إضافات",          "neg"),
+        "ADA":  ("احتفظ · انتظر mainnet Q4",       "hl"),
+        "ARB":  ("احتفظ · آخر أولوية",             "hl"),
+        "DOT":  ("احتفظ بحياد",                    "hl"),
+        "GALA": ("احتفظ فقط · راقب الألعاب",       "neg"),
     }
-    for sym, (action_ar, css) in actions.items():
-        m_data = data["stocks"].get(sym, {}) if sym in STOCKS else {}
-        c_data = data["crypto"].get(sym, {}) if sym in CRYPTOS else {}
-        if sym in STOCKS:
-            q = m_data.get("quote", {})
-            price = fmt_price(q.get("price", 0)) if q else "N/A"
-        else:
-            pd = c_data.get("price", {})
-            price = fmt_price(pd.get("price", 0), sym) if pd else "N/A"
-        color = STOCK_META.get(sym, CRYPTO_META.get(sym, {})).get("color", "#374151")
-        action_rows += f"""<tr>
-          <td><strong style="color:{color}">{sym}</strong></td>
-          <td style="font-family:'DV',sans-serif">{price}</td>
-          <td class="{css}">{action_ar}</td>
-        </tr>"""
 
-    return f"""
+    for s in PORTFOLIO["stocks"]:
+        sym = s["sym"]
+        q = data["stocks"][sym].get("quote", {})
+        cur = q.get("price", s["buy"])
+        pnl_p = ((cur - s["buy"]) / s["buy"]) * 100
+        act, css_cls = actions.get(sym, ("احتفظ", "hl"))
+        col = s["color"]
+        html += f'<tr><td><strong style="color:#{col}">{sym}</strong></td><td style="font-family:DV">{fmt_price(cur)}</td><td class="{css_cls}" style="font-family:DV">{arrow(pnl_p)}{abs(pnl_p):.1f}%</td><td class="{css_cls}">{act}</td></tr>'
+
+    for c in PORTFOLIO["crypto"]:
+        sym = c["sym"]
+        p = data["crypto"][sym].get("price", {})
+        cur = p.get("price", c["buy"])
+        pnl_p = ((cur - c["buy"]) / c["buy"]) * 100
+        act, css_cls = actions.get(sym, ("احتفظ", "hl"))
+        col = c["color"]
+        html += f'<tr><td><strong style="color:#{col}">{sym}</strong></td><td style="font-family:DV">{fmt_price(cur,sym)}</td><td class="{css_cls}" style="font-family:DV">{arrow(pnl_p)}{abs(pnl_p):.1f}%</td><td class="{css_cls}">{act}</td></tr>'
+
+    html += f"""
+</table>
+<div class="footer">محفظة سيف الشخصية · الكريبتو وخطة العمل · {date_str} · للأغراض المعلوماتية فقط · ليس نصيحة مالية</div>
+</div>
+</body></html>"""
+    return html
+
+# ════════════════════════════════════════════════════════════
+# PDF 2 & 3: MARKET ANALYSIS (AR + EN)
+# ════════════════════════════════════════════════════════════
+def build_market_ar(data, date_str, am, amb, dv, dvb):
+    css = build_css(am, amb, dv, dvb)
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>{css}</style></head>
+<body>
+<!-- PAGE 1: MACRO + SECTORS -->
 <div class="page ar">
-  <div style="background:linear-gradient(135deg,#0f2d5a,#1d4ed8);border-radius:12px;padding:16px 26px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 4px 16px rgba(29,78,216,0.22)">
-    <div style="text-align:right">
-      <div style="font-size:10px;color:rgba(255,255,255,0.65);margin-bottom:3px">الجزء 2 من 2 · الكريبتو وخطة العمل</div>
-      <div style="font-size:18px;font-weight:700;color:#fff">الكريبتو · خطة العمل · السيناريوهات</div>
-    </div>
-    <div style="text-align:left;font-size:11px;color:rgba(255,255,255,0.75)">{today_str} · 2:30 ظهرًا</div>
+<div class="hdr" style="flex-direction:row-reverse">
+  <div style="text-align:right">
+    <div class="hdr-badge">تحليل السوق اليومي · الجزء الأول</div>
+    <div class="hdr-title">تحليل السوق العالمي والفرص</div>
+    <div class="hdr-sub">الاقتصاد الكلي · الجيوسياسة · القطاعات · الكريبتو · السيناريوهات</div>
   </div>
-
-  <div class="sec sec-ar"><div class="dot"></div>₿ الكريبتو — الأسعار والأخبار</div>
-  <div class="g4">{crypto_cards}</div>
-
-  <div class="sec sec-ar"><div class="dot"></div>⚡ خطة العمل — توصياتي المباشرة</div>
-  <table class="tbl" style="direction:rtl">
-    <tr>
-      <th style="text-align:right">الأصل</th>
-      <th style="text-align:right">السعر</th>
-      <th style="text-align:right">التوصية</th>
-    </tr>
-    {action_rows}
-  </table>
-
-  <div class="bline" style="text-align:right">
-    <h3>⚡ خلاصة اليوم</h3>
-    <p>محفظتك تعمل في بيئة سوق متقلبة. الأسهم تتأثر بثلاثة عوامل رئيسية: إعادة تسعير AI بعد برودكوم، مخاوف رفع الفائدة من تقرير الوظائف القوي، وضغط النفط من أزمة إيران. الكريبتو يتداول كأصل مخاطرة بدلاً من ملاذ آمن. راقب CPI في 10 يونيو وأرباح مايكرون في 24 يونيو — هما أهم حدثَين لمحفظتك.</p>
+  <div style="text-align:left">
+    <div style="font-size:18px;font-weight:700;color:#fff">{date_str}</div>
+    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">2:30 ظهرًا · بتوقيت الخليج</div>
   </div>
+</div>
 
-  <div class="footer">الجزء 2 من 2 · الكريبتو وخطة العمل · {today_str} · للأغراض المعلوماتية فقط · ليس نصيحة مالية</div>
-</div>"""
+<div class="strip">
+  <div class="sc" style="background:linear-gradient(135deg,#fff5f5,#ffe8e8)">
+    <div class="sv neg">7,383</div><div class="sl">S&P 500 (−2.64%)</div>
+  </div>
+  <div class="sc" style="background:linear-gradient(135deg,#fff5f5,#ffe8e8)">
+    <div class="sv neg">25,709</div><div class="sl">ناسداك (−4.18%)</div>
+  </div>
+  <div class="sc" style="background:linear-gradient(135deg,#fffdf0,#fef3c7)">
+    <div class="sv warn">$97</div><div class="sl">برنت/برميل</div>
+  </div>
+  <div class="sc" style="background:linear-gradient(135deg,#fefce8,#fef9c3)">
+    <div class="sv" style="color:#92400e;font-family:DV">$4,593</div><div class="sl">الذهب/أوقية</div>
+  </div>
+  <div class="sc" style="background:linear-gradient(135deg,#ebf8ff,#dde9f5)">
+    <div class="sv hl">3.50%</div><div class="sl">الفائدة الفيدرالية</div>
+  </div>
+</div>
 
+<div class="alert alert-ar a-r">
+  <div class="a-icon">🔴</div>
+  <div style="flex:1;text-align:right">
+    <div class="a-title">موجة بيع حادة في أشباه الموصلات — أسوأ جلسة منذ مارس 2020</div>
+    <div class="a-body">ناسداك −4.18% · SOX (أشباه الموصلات) أسوأ يوم منذ 2020 · تريليون دولار مُمحى في 48 ساعة. المحرك: إخفاق برودكوم + تقرير وظائف قوي (172K) يرفع مخاوف الفائدة + إيران تعلّق المحادثات وترفع النفط 6%.</div>
+  </div>
+</div>
 
-def build_part1_en(data, today_str):
-    stocks = data["stocks"]
+<div class="sec sec-ar"><div class="dot"></div>🌍 المشهد الجيوسياسي والكلي</div>
+<div class="g3">
+  <div class="card" style="text-align:right">
+    <div style="font-size:10px;color:#718096;margin-bottom:7px">🇺🇸🇮🇷 الصراع الأمريكي-الإيراني</div>
+    <div style="font-size:11.5px;color:#2d3748;line-height:1.7">مضيق هرمز مغلق جزئيًا — 21% من نفط العالم. إيران علّقت المحادثات 1 يونيو. برنت يقفز 6% في جلسة واحدة.<br><br><strong style="color:#0f2d5a">تقييمي:</strong> 60% تسوية بحلول Q3. 40% تصعيد صيفي — سيناريو $200/برميل.</div>
+  </div>
+  <div class="card" style="text-align:right">
+    <div style="font-size:10px;color:#718096;margin-bottom:7px">🇺🇸🇨🇳 حرب الرقائق والذكاء الاصطناعي</div>
+    <div style="font-size:11.5px;color:#2d3748;line-height:1.7">الصين تمتلك الآن 41% من سوق رقائق AI محليًا (مقابل 10% في 2023). هواوي وكامبريكون يتقدمان بسرعة كبيرة.<br><br><strong style="color:#0f2d5a">تقييمي:</strong> الانفصال لا رجعة فيه. PLTR وNOW أكثر حمايةً.</div>
+  </div>
+  <div class="card" style="text-align:right">
+    <div style="font-size:10px;color:#718096;margin-bottom:7px">🏦 الاحتياطي الفيدرالي</div>
+    <div style="font-size:11.5px;color:#2d3748;line-height:1.7">الرئيس الجديد كيفن وورش (منذ 15 مايو). FOMC القادم: 16-17 يونيو. السوق يسعّر 98% ثبات.<br><br>⚡ <strong style="color:#c53030">CPI الأهم: 10 يونيو</strong><br>JP Morgan: 35% احتمال ركود.</div>
+  </div>
+</div>
 
-    stock_cards = ""
-    for sym in STOCKS:
-        m = STOCK_META[sym]
-        q = stocks[sym].get("quote", {})
-        news = stocks[sym].get("news", [])
-        pc = stocks[sym].get("put_call", {})
-        earn = stocks[sym].get("earnings", m["earn"])
+<div class="sec sec-ar"><div class="dot"></div>📊 بطاقة تقييم القطاعات</div>
+<table class="tbl" style="direction:rtl">
+<tr><th style="text-align:right">القطاع</th><th style="text-align:right">الحالة</th><th style="text-align:right">توقعي</th><th style="text-align:right">الإشارة</th></tr>
+<tr><td><strong>ذكاء اصطناعي / رقائق</strong></td><td class="neg">تصحيح عميق</td><td>الأطروحة سليمة — منطقة تراكم</td><td class="warn">انتظر · CPI أولاً</td></tr>
+<tr><td><strong>برمجيات AI المؤسسية</strong></td><td class="neg">تحت ضغط</td><td>PLTR وNOW: فرصة على الانخفاض</td><td class="pos">تراكم انتقائي</td></tr>
+<tr><td><strong>الدفاع والفضاء</strong></td><td class="pos">يتفوق</td><td>رياح خلفية هيكلية</td><td class="pos">صاعد</td></tr>
+<tr><td><strong>الطاقة / النفط</strong></td><td class="pos">مرتفع</td><td>قريب: $85-100. الحل = تراجع حاد</td><td class="warn">محايد</td></tr>
+<tr><td><strong>الذهب / المعادن</strong></td><td class="pos">قوي</td><td>سوق صاعدة هيكلية حتى 2027</td><td class="pos">صاعد</td></tr>
+<tr><td><strong>الكريبتو (عام)</strong></td><td class="neg">ضغط هبوطي</td><td>BTC $60K خط الدفاع · CLARITY Act = المحفز</td><td class="warn">انتقائي</td></tr>
+</table>
 
-        price = fmt_price(q.get("price", 0))
-        chg   = float(q.get("chg_pct", 0)) if q else 0
-        vol   = fmt_vol(q.get("volume", 0))
-        hi    = fmt_price(q.get("high", 0))
-        lo    = fmt_price(q.get("low", 0))
-        arrow = "▲" if chg >= 0 else "▼"
-        chg_c = "pos" if chg >= 0 else "neg"
-        sent_avg = sum(n["sentiment_score"] for n in news)/len(news) if news else 0
-        sent_lbl = "Bullish" if sent_avg > 0.15 else ("Bearish" if sent_avg < -0.15 else "Neutral")
-        sent_col = sentiment_color(sent_lbl)
+<div class="sec sec-ar"><div class="dot"></div>🎯 السيناريوهات — تقييمي الاحتمالي</div>
+<div class="sc3">
+  <div class="scn s-bull" style="text-align:right">
+    <div class="sn-t">🟢 السيناريو الصاعد</div>
+    <div class="prob">25%</div>
+    <p>CPI بارد + اتفاق إيران + مرور CLARITY Act → تعافٍ متفجر في الرقائق والكريبتو. S&P 500 فوق 7,600. XRP +50%+.</p>
+  </div>
+  <div class="scn s-base" style="text-align:right">
+    <div class="sn-t">🔵 السيناريو الأساسي</div>
+    <div class="prob">50%</div>
+    <p>التعثر والمضي → فيدرالي ثابت → إيران محتوى → سوق جانبية 7,000-7,600. تعافٍ جزئي بطيء.</p>
+  </div>
+  <div class="scn s-bear" style="text-align:right">
+    <div class="sn-t">🔴 السيناريو الهابط</div>
+    <div class="prob">25%</div>
+    <p>CPI ساخن + تصعيد إيران + إشارة رفع وورش → ركود JP Morgan 35% → S&P 500 يختبر 6,500.</p>
+  </div>
+</div>
 
-        news_html = "".join(f"<li>{n['title'][:110]}</li>" for n in news[:4])
+<div class="cal-g">
+  <div class="cal hot"><div class="cal-d">الثلاثاء 10 يونيو</div><div class="cal-e">🔴 CPI مايو — الأهم</div></div>
+  <div class="cal warm"><div class="cal-d">الخميس 12 يونيو</div><div class="cal-e">🚀 IPO سبيس إكس $75B</div></div>
+  <div class="cal cool"><div class="cal-d">يونيو 2026</div><div class="cal-e">⚖️ تصويت CLARITY Act</div></div>
+  <div class="cal cool"><div class="cal-d">16-17 يونيو</div><div class="cal-e">🏦 FOMC — أول وورش</div></div>
+  <div class="cal hot"><div class="cal-d">الثلاثاء 24 يونيو</div><div class="cal-e">🔴 أرباح مايكرون MU</div></div>
+</div>
+<div class="footer">تحليل السوق اليومي · الجزء الأول · {date_str} · للأغراض المعلوماتية فقط · ليس نصيحة مالية</div>
+</div>
 
-        pc_html = ""
-        if pc:
-            ratio = pc.get("ratio", "N/A")
-            sig   = pc.get("signal", "N/A")
-            pc_html = f"""<div class="scard-pc">
-              <span class="pc-lbl">Put/Call Ratio:</span>
-              <span class="pc-val">{ratio}</span>
-              <span class="stag-sent" style="background:{sent_col}20;color:{sent_col};margin-left:8px">{sig}</span>
-            </div>"""
+<!-- PAGE 2: OPPORTUNITIES -->
+<div class="page ar">
+<div style="background:linear-gradient(135deg,#0f2d5a,#1d4ed8);border-radius:12px;padding:18px 26px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 4px 16px rgba(29,78,216,.22)">
+  <div style="text-align:right">
+    <div style="font-size:10px;color:rgba(255,255,255,.65);margin-bottom:3px">تحليل السوق اليومي · الجزء الثاني</div>
+    <div style="font-size:19px;font-weight:700;color:#fff">فرص الدخول الواعدة</div>
+  </div>
+  <div style="font-size:10.5px;color:rgba(255,255,255,.75)">{date_str}</div>
+</div>
 
-        stock_cards += f"""
-        <div class="scard" style="border-top:3px solid {m['color']};direction:ltr">
-          <div class="scard-top">
-            <div class="scard-row">
-              <div>
-                <div class="scard-sym" style="color:{m['color']}">{sym}</div>
-                <div class="scard-name">{m['name']}</div>
-              </div>
-              <div style="text-align:right">
-                <div class="scard-price">{price}</div>
-                <div class="{chg_c}" style="font-family:'DV',sans-serif;font-size:12px">{arrow} {abs(chg):.2f}% &nbsp;|&nbsp; Vol: {vol}</div>
-              </div>
-            </div>
-          </div>
-          <div class="scard-meta">
-            <span class="stag">High: {hi}</span>
-            <span class="stag">Low: {lo}</span>
-            <span class="stag-earn">⚠ Earnings: {earn}</span>
-            <span class="stag-sent" style="background:{sent_col}20;color:{sent_col}">Sentiment: {sent_lbl}</span>
-          </div>
-          <div class="scard-news"><ul>{news_html}</ul></div>
-          {pc_html}
-        </div>"""
+<div class="sec sec-ar"><div class="dot"></div>🌟 فرص في الأسهم خارج محفظتك</div>
 
-    sent_rows_en = ""
-    for sym in STOCKS:
-        q = stocks[sym].get("quote", {})
-        chg = float(q.get("chg_pct", 0)) if q else 0
-        color = STOCK_META[sym]["color"]
-        w = min(abs(chg)*4.5, 90)
-        sign = "+" if chg >= 0 else ""
-        c = "#276749" if chg >= 0 else "#c53030"
-        sent_rows_en += f"""<div class="brow">
-          <div class="blbl" style="font-weight:700;color:{color}">{sym}</div>
-          <div class="btrack" style="background:{'#f0fff4' if chg>=0 else '#fff5f5'}">
-            <div class="bfill" style="width:{w}%;background:{c}">
-              <span class="bval">{sign}{chg:.2f}%</span>
-            </div>
-          </div>
-        </div>"""
+<div class="opp">
+  <div class="opp-t" style="text-align:right">🟢 فرصة 1: Bitcoin (BTC) — $60K هو سعر الدخول المؤسسي</div>
+  <p style="text-align:right">BTC عند $60K اليوم هو نفس السعر الذي دفعه المؤسسيون الكبار في أبريل. Strategy أضافت 80,000 BTC في 2026 وحدها. ETF BlackRock يواصل التراكم اليومي. $60K هو خط الدفاع النفسي الحاسم — كسره يعني ضغطًا نحو $45-50K، لكن الاحتمال الأكثر ترجيحًا هو الصمود والارتداد.<br><br><strong>نقطة الدخول:</strong> $58-62K مرحليًا · <strong>الهدف:</strong> $80-90K عند تحسن الظروف الكلية · <strong>وقف الخسارة:</strong> $54K</p>
+</div>
 
-    return f"""
+<div class="opp">
+  <div class="opp-t" style="text-align:right">🟢 فرصة 2: Coinbase (COIN) — الرابح الأكبر من CLARITY Act</div>
+  <p style="text-align:right">COIN هو المستفيد الأكبر من تحقق الوضوح التنظيمي في الولايات المتحدة. أحجام التداول على المنصة تتجاوز $1.5 تريليون سنويًا. قانون CLARITY Act يفتح الباب للأصول المؤسسية على نطاق غير مسبوق. السهم تراجع 30% من قمته — نقطة دخول مثيرة للاهتمام.<br><br><strong>نقطة الدخول:</strong> $180-200 · <strong>الهدف:</strong> $280+ خلال 12 شهرًا · <strong>المحفز:</strong> تصويت CLARITY Act يونيو 2026</p>
+</div>
+
+<div class="opp">
+  <div class="opp-t" style="text-align:right">🟡 فرصة 3: AMD — بديل للتنويع في قطاع الرقائق</div>
+  <p style="text-align:right">AMD هبطت 12.6% في نفس موجة البيع — لكن تقييمها أكثر معقولية من MU. MI300X GPU يكسب حصة سوقية في الذكاء الاصطناعي مقابل Nvidia. لا تعرض صيني مباشر — ميزة في بيئة حرب الرقائق الحالية. تنويع جيد لمن لديه تعرض كبير لمايكرون.<br><br><strong>نقطة الدخول:</strong> $100-115 · <strong>الهدف:</strong> $150+ · <strong>المخاطرة:</strong> متوسطة</p>
+</div>
+
+<div class="sec sec-ar"><div class="dot"></div>🌟 فرص في الكريبتو خارج محفظتك</div>
+
+<div class="opp">
+  <div class="opp-t" style="text-align:right">🟢 فرصة 4: Stellar (XLM) — موجة التوكنزيشن</div>
+  <p style="text-align:right">XLM ارتفعت 40% بعد إعلان DTCC اختيارها لشبكتها لتوكنزيشن الأوراق المالية. هذا يثبت أن التمويل التقليدي بدأ يتبنى البلوكشين العامة. XLM تتشابه في حالة الاستخدام مع XRP لكن بتقييم أقل.<br><br><strong>نقطة الدخول:</strong> $0.08-0.10 · <strong>الهدف:</strong> $0.20-0.25 · <strong>المحفز:</strong> توسع شراكات DTCC والبنوك</p>
+</div>
+
+<div class="opp">
+  <div class="opp-t" style="text-align:right">🟢 فرصة 5: Ethereum (ETH) — تحت $2,000 فرصة تاريخية</div>
+  <p style="text-align:right">ETH تحت $2,000 هي مستوى شهدنا فيه تاريخيًا تراكمًا مؤسسيًا قويًا. ETH ETF يواصل التدفقات الإيجابية. Pectra upgrade محفز تقني قريب. معدل الحرق لا يزال يقلص العرض تدريجيًا.<br><br><strong>نقطة الدخول:</strong> $1,600-1,800 · <strong>الهدف:</strong> $2,800-3,200 · <strong>المحفز:</strong> تحسن الظروف الكلية + Pectra</p>
+</div>
+
+<div class="bline" style="text-align:right">
+  <h3>⚡ خلاصتي — قراءة المشهد الكامل</h3>
+  <p>نحن في منطقة ضغط مؤقت ناجمة عن ثلاثة عوامل متقاطعة: إعادة تسعير AI بعد برودكوم، مخاوف الفائدة من تقرير الوظائف، وضغط النفط من أزمة هرمز. <strong>لا شيء من هذا يلغي الأطروحة الهيكلية</strong> لمحفظتك أو لسوق الكريبتو بشكل عام.<br><br>
+  أولوياتك هذا الأسبوع: (1) CPI 10 يونيو — إن جاء باردًا أضف على NOW. (2) راقب Form 4 لـ CBRS يوميًا. (3) لا تتحرك على MU حتى 24 يونيو. أما الفرص خارج محفظتك: BTC عند $60K وCOIN قبل CLARITY Act هما أفضل فرصتين قصيرتي المدى.</p>
+</div>
+<div class="footer">تحليل السوق اليومي · الجزء الثاني · {date_str} · للأغراض المعلوماتية فقط · ليس نصيحة مالية</div>
+</div>
+</body></html>"""
+
+def build_market_en(data, date_str, am, amb, dv, dvb):
+    css = build_css(am, amb, dv, dvb)
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>{css}</style></head>
+<body>
 <div class="page en">
-  <div class="hdr">
-    <div>
-      <div class="hdr-badge">Morning Briefing · Part 1 of 2 · Stocks</div>
-      <div class="hdr-title">Your Portfolio — Morning Briefing</div>
-      <div class="hdr-sub">MU · NOW · PLTR · CBRS &nbsp;|&nbsp; XRP · SOL · HBAR · SHIB · ADA · ARB · DOT · GALA</div>
-    </div>
-    <div style="text-align:right">
-      <div class="hdr-date">{today_str}</div>
-      <div class="hdr-time">2:30 PM GST</div>
-      <div class="hdr-pill">Live Data · Alpha Vantage</div>
-    </div>
+<div class="hdr">
+  <div>
+    <div class="hdr-badge">Daily Market Analysis · Part 1</div>
+    <div class="hdr-title">Global Market Intelligence & Opportunities</div>
+    <div class="hdr-sub">Macro · Geopolitics · Sectors · Crypto · Scenarios · Entry Opportunities</div>
   </div>
-
-  <div class="sec"><div class="dot"></div>📈 STOCKS — Today's Performance & News</div>
-  <div class="g2">{stock_cards}</div>
-
-  <div class="sec"><div class="dot"></div>📊 Daily Change Chart</div>
-  <div class="bc">
-    <div class="bc-t">Portfolio Stocks — Daily Price Change</div>
-    {sent_rows_en}
+  <div style="text-align:right">
+    <div style="font-size:18px;font-weight:700;color:#fff">{date_str}</div>
+    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">2:30 PM GST</div>
   </div>
+</div>
 
-  <div class="footer">Part 1 of 2 · Stocks · {today_str} · For informational purposes only · Not financial advice</div>
-</div>"""
+<div class="strip">
+  <div class="sc" style="background:linear-gradient(135deg,#fff5f5,#ffe8e8)"><div class="sv neg">7,383</div><div class="sl">S&P 500 (−2.64%)</div></div>
+  <div class="sc" style="background:linear-gradient(135deg,#fff5f5,#ffe8e8)"><div class="sv neg">25,709</div><div class="sl">Nasdaq (−4.18%)</div></div>
+  <div class="sc" style="background:linear-gradient(135deg,#fffdf0,#fef3c7)"><div class="sv warn">$97</div><div class="sl">Brent/bbl</div></div>
+  <div class="sc" style="background:linear-gradient(135deg,#fefce8,#fef9c3)"><div class="sv" style="color:#92400e;font-family:DV">$4,593</div><div class="sl">Gold/oz</div></div>
+  <div class="sc" style="background:linear-gradient(135deg,#ebf8ff,#dde9f5)"><div class="sv hl">3.50%</div><div class="sl">Fed Rate</div></div>
+</div>
 
-
-def build_part2_en(data, today_str):
-    cryptos = data["crypto"]
-
-    crypto_cards = ""
-    for sym in CRYPTOS:
-        m = CRYPTO_META[sym]
-        cdata = cryptos.get(sym, {})
-        price_data = cdata.get("price", {})
-        news = cdata.get("news", [])
-
-        price = fmt_price(price_data.get("price", 0), sym)
-        sent_avg = sum(n["sentiment_score"] for n in news)/len(news) if news else 0
-        sent_lbl = "Bullish" if sent_avg > 0.15 else ("Bearish" if sent_avg < -0.15 else "Neutral")
-        sent_col = sentiment_color(sent_lbl)
-        cat_en = {"بنية تحتية":"INFRA","مدفوعات":"PAYMENTS","الطبقة 2":"LAYER2","ألعاب":"GAMING","ميم":"MEME"}.get(m["cat"],"")
-        cat_style = {
-            "INFRA":    "background:#dbeafe;color:#1e40af",
-            "PAYMENTS": "background:#dcfce7;color:#166534",
-            "LAYER2":   "background:#ede9fe;color:#6d28d9",
-            "GAMING":   "background:#fef3c7;color:#92400e",
-            "MEME":     "background:#fee2e2;color:#991b1b",
-        }.get(cat_en, "background:#f3f4f6;color:#374151")
-
-        news_html = "".join(
-            f"<div style='font-size:10.5px;color:#4a5568;margin-bottom:4px;line-height:1.5;border-left:3px solid {m['color']};padding-left:7px'>{n['title'][:100]}</div>"
-            for n in news[:3])
-
-        crypto_cards += f"""
-        <div class="ccard" style="border-top:3px solid {m['color']};direction:ltr">
-          <div class="ccard-sym" style="color:{m['color']}">{sym}</div>
-          <div style="font-size:10px;color:#718096">{m['name']}</div>
-          <div class="ccard-price">{price}</div>
-          <div class="ccard-cat" style="{cat_style}">{cat_en}</div>
-          <div style="margin-bottom:6px">
-            <span style="font-size:9px;padding:1px 6px;border-radius:4px;background:{sent_col}20;color:{sent_col};font-weight:700">Sentiment: {sent_lbl}</span>
-          </div>
-          {news_html}
-        </div>"""
-
-    action_rows = ""
-    actions_en = {
-        "MU":   ("HOLD · Do NOT add pre-earnings Jun 24", "warn"),
-        "NOW":  ("ACCUMULATE toward $100-105", "pos"),
-        "PLTR": ("HOLD · Accumulate below $120", "pos"),
-        "CBRS": ("HOLD · Watch lockup daily", "neg"),
-        "XRP":  ("HOLD · Small add below $0.45", "pos"),
-        "SOL":  ("HOLD · Strong fundamentals", "hl"),
-        "HBAR": ("HOLD · High conviction long-term", "pos"),
-        "ADA":  ("HOLD · Wait Q4 mainnet", "hl"),
-        "ARB":  ("HOLD · Last priority in risk-off", "hl"),
-        "DOT":  ("NEUTRAL HOLD", "hl"),
-        "SHIB": ("HOLD ONLY · No additions", "neg"),
-        "GALA": ("HOLD ONLY · Monitor pipeline", "neg"),
-    }
-    for sym, (action_en, css) in actions_en.items():
-        if sym in STOCKS:
-            q = data["stocks"].get(sym, {}).get("quote", {})
-            price = fmt_price(q.get("price", 0)) if q else "N/A"
-        else:
-            pd = data["crypto"].get(sym, {}).get("price", {})
-            price = fmt_price(pd.get("price", 0), sym) if pd else "N/A"
-        color = STOCK_META.get(sym, CRYPTO_META.get(sym, {})).get("color", "#374151")
-        action_rows += f"""<tr>
-          <td><strong style="color:{color}">{sym}</strong></td>
-          <td style="font-family:'DV',sans-serif">{price}</td>
-          <td class="{css}">{action_en}</td>
-        </tr>"""
-
-    return f"""
-<div class="page en">
-  <div style="background:linear-gradient(135deg,#0f2d5a,#1d4ed8);border-radius:12px;padding:16px 26px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 4px 16px rgba(29,78,216,0.22)">
-    <div>
-      <div style="font-size:10px;color:rgba(255,255,255,0.65);margin-bottom:3px">Part 2 of 2 · Crypto &amp; Action Plan</div>
-      <div style="font-size:18px;font-weight:700;color:#fff">Crypto · Action Plan · Scenarios</div>
-    </div>
-    <div style="font-size:11px;color:rgba(255,255,255,0.75)">{today_str} · 2:30 PM GST</div>
+<div class="alert a-r">
+  <div class="a-icon">🔴</div>
+  <div style="flex:1">
+    <div class="a-title">Semiconductor Selloff — Worst Session Since March 2020</div>
+    <div class="a-body">Nasdaq −4.18% · SOX (Philadelphia Semiconductor Index) worst day since March 2020 · $1T erased in 48 hours. Triple catalyst: Broadcom miss + strong May jobs (172K) reviving rate-hike fears + Iran suspends talks, oil spikes 6%.</div>
   </div>
+</div>
 
-  <div class="sec"><div class="dot"></div>₿ CRYPTO — Prices &amp; News</div>
-  <div class="g4">{crypto_cards}</div>
-
-  <div class="sec"><div class="dot"></div>⚡ ACTION PLAN — My Direct Recommendations</div>
-  <table class="tbl" style="direction:ltr">
-    <tr><th>Asset</th><th>Price</th><th>Recommendation</th></tr>
-    {action_rows}
-  </table>
-
-  <div class="bline">
-    <h3>⚡ Today's Bottom Line</h3>
-    <p>Your portfolio is operating in a volatile macro environment driven by three forces: AI valuation reset post-Broadcom, Fed rate-hike fears from the strong jobs report, and oil/inflation pressure from the Iran conflict. Crypto is trading as a risk asset rather than safe haven. Watch the June 10 CPI and June 24 MU earnings — these are the two most critical catalysts for your portfolio this month.</p>
+<div class="sec"><div class="dot"></div>🌍 Geopolitical & Macro Landscape</div>
+<div class="g3">
+  <div class="card">
+    <div style="font-size:10px;color:#718096;margin-bottom:7px">🇺🇸🇮🇷 US-Iran Conflict</div>
+    <div style="font-size:11.5px;color:#2d3748;line-height:1.7">Strait of Hormuz partially blocked — 21% of world oil. Iran suspended talks June 1. Brent spiked 6% in one session.<br><br><strong style="color:#0f2d5a">My view:</strong> 60% partial resolution by Q3. 40% summer escalation — $200/barrel scenario.</div>
   </div>
+  <div class="card">
+    <div style="font-size:10px;color:#718096;margin-bottom:7px">🇺🇸🇨🇳 AI / Chip War</div>
+    <div style="font-size:11.5px;color:#2d3748;line-height:1.7">China now holds 41% of its AI chip market domestically (vs 10% in 2023). Huawei advancing rapidly.<br><br><strong style="color:#0f2d5a">My view:</strong> Decoupling is permanent. PLTR and NOW relatively insulated with no China exposure.</div>
+  </div>
+  <div class="card">
+    <div style="font-size:10px;color:#718096;margin-bottom:7px">🏦 Federal Reserve</div>
+    <div style="font-size:11.5px;color:#2d3748;line-height:1.7">New Chair Kevin Warsh (since May 15). Next FOMC: June 16-17. Market pricing 98% no change.<br><br>⚡ <strong style="color:#c53030">Critical CPI: June 10</strong><br>JP Morgan recession probability: 35%.</div>
+  </div>
+</div>
 
-  <div class="footer">Part 2 of 2 · Crypto &amp; Action Plan · {today_str} · For informational purposes only · Not financial advice</div>
-</div>"""
+<div class="sec"><div class="dot"></div>📊 Sector Scorecard</div>
+<table class="tbl">
+<tr><th>Sector</th><th>Status</th><th>My Outlook</th><th>Signal</th></tr>
+<tr><td><strong>AI / Semiconductors</strong></td><td class="neg">Deep correction</td><td>Thesis intact — accumulation zone</td><td class="warn">Wait · CPI first</td></tr>
+<tr><td><strong>Enterprise AI Software</strong></td><td class="neg">Under pressure</td><td>PLTR, NOW: dip = opportunity</td><td class="pos">Selective accumulate</td></tr>
+<tr><td><strong>Defense & Aerospace</strong></td><td class="pos">Outperforming</td><td>Structural tailwind from Iran conflict</td><td class="pos">Bullish</td></tr>
+<tr><td><strong>Energy / Oil</strong></td><td class="pos">Elevated</td><td>Near-term $85-100. Resolution = sharp drop</td><td class="warn">Neutral</td></tr>
+<tr><td><strong>Gold / Metals</strong></td><td class="pos">Strong</td><td>Structural bull market through 2027</td><td class="pos">Bullish</td></tr>
+<tr><td><strong>Crypto (broad)</strong></td><td class="neg">Bear pressure</td><td>BTC $60K defense. CLARITY Act = catalyst</td><td class="warn">Selective by asset</td></tr>
+</table>
 
+<div class="sec"><div class="dot"></div>🎯 Scenario Probabilities</div>
+<div class="sc3">
+  <div class="scn s-bull">
+    <div class="sn-t">🟢 Bull Scenario</div><div class="prob">25%</div>
+    <p>Cool CPI + Iran deal + CLARITY Act → explosive recovery in semis and crypto. S&P 500 above 7,600. XRP +50%+.</p>
+  </div>
+  <div class="scn s-base">
+    <div class="sn-t">🔵 Base Scenario</div><div class="prob">50%</div>
+    <p>Muddle-through → Fed on hold → Iran contained → range-bound 7,000-7,600. Slow partial recovery.</p>
+  </div>
+  <div class="scn s-bear">
+    <div class="sn-t">🔴 Bear Scenario</div><div class="prob">25%</div>
+    <p>Hot CPI + Iran escalation + Warsh hike signal → JP Morgan's 35% recession materializes → S&P 500 tests 6,500.</p>
+  </div>
+</div>
 
-def build_pdf(html_content, out_path):
-    """Render HTML to PDF via Playwright."""
+<div class="sec"><div class="dot"></div>🌟 Investment Opportunities</div>
+<div class="opp">
+  <div class="opp-t">🟢 Opportunity 1: Bitcoin (BTC) — $60K = Institutional Entry Price</div>
+  <p>BTC at $60K today is the same level institutions paid in April. Strategy added 80,000 BTC in 2026 alone. BlackRock ETF continues daily accumulation. $60K is the critical psychological support — the most likely scenario is a hold and bounce.<br><br><strong>Entry:</strong> $58-62K in tranches · <strong>Target:</strong> $80-90K on macro improvement · <strong>Stop:</strong> $54K</p>
+</div>
+<div class="opp">
+  <div class="opp-t">🟢 Opportunity 2: Coinbase (COIN) — CLARITY Act Proxy Trade</div>
+  <p>COIN is the single largest beneficiary of US regulatory clarity. Platform volume exceeds $1.5T annually. CLARITY Act unlocks institutional asset management on-chain at unprecedented scale. Stock down 30% from peak.<br><br><strong>Entry:</strong> $180-200 · <strong>Target:</strong> $280+ (12 months) · <strong>Catalyst:</strong> CLARITY Act vote June 2026</p>
+</div>
+<div class="opp">
+  <div class="opp-t">🟡 Opportunity 3: AMD — Better-Valued Chip Diversification</div>
+  <p>AMD fell 12.6% in the same selloff but trades at a more reasonable valuation than MU. MI300X GPU gaining AI market share. No direct China revenue exposure — key advantage in the chip war environment.<br><br><strong>Entry:</strong> $100-115 · <strong>Target:</strong> $150+ · <strong>Risk:</strong> Medium</p>
+</div>
+<div class="opp">
+  <div class="opp-t">🟢 Opportunity 4: Stellar (XLM) — Tokenization Wave</div>
+  <p>XLM surged 40% after DTCC chose its network for tokenized securities — proof that traditional finance is beginning to adopt public blockchains. XLM has a similar use case to XRP but lower valuation.<br><br><strong>Entry:</strong> $0.08-0.10 · <strong>Target:</strong> $0.20-0.25 · <strong>Catalyst:</strong> DTCC + bank partnerships</p>
+</div>
+
+<div class="bline">
+  <h3>⚡ Bottom Line — My Complete Assessment</h3>
+  <p>We are in temporary pressure driven by three converging forces: AI valuation reset post-Broadcom, rate-hike fears from the jobs report, and oil pressure from the Hormuz crisis. <strong>None of this invalidates the structural thesis</strong> of your portfolio or crypto broadly.<br><br>
+  This week's priorities: (1) June 10 CPI — if cool, add to NOW. (2) Watch CBRS Form 4 daily. (3) Do nothing on MU until June 24. For opportunities outside your portfolio: BTC at $60K and COIN pre-CLARITY Act are the two best near-term setups.</p>
+</div>
+
+<div class="cal-g">
+  <div class="cal hot"><div class="cal-d">Tue Jun 10</div><div class="cal-e">🔴 May CPI</div></div>
+  <div class="cal warm"><div class="cal-d">Thu Jun 12</div><div class="cal-e">🚀 SpaceX IPO $75B</div></div>
+  <div class="cal cool"><div class="cal-d">~Jun 2026</div><div class="cal-e">⚖️ CLARITY Act</div></div>
+  <div class="cal cool"><div class="cal-d">Jun 16-17</div><div class="cal-e">🏦 FOMC — Warsh</div></div>
+  <div class="cal hot"><div class="cal-d">Tue Jun 24</div><div class="cal-e">🔴 MU Earnings</div></div>
+</div>
+<div class="footer">Daily Market Analysis · {date_str} · For informational purposes only · Not financial advice · Powered by Claude + Alpha Vantage</div>
+</div>
+</body></html>"""
+
+# ── BUILD PDFs ────────────────────────────────────────────────
+def build_pdf(html, out_path):
     with sync_playwright() as p:
         browser = p.chromium.launch()
         pg = browser.new_page()
-        pg.set_content(html_content, wait_until='networkidle')
+        pg.set_content(html, wait_until='networkidle')
         pg.wait_for_timeout(3000)
         pg.pdf(path=out_path, width='1240px', print_background=True,
                margin={"top":"0","bottom":"0","left":"0","right":"0"})
         browser.close()
-    size = os.path.getsize(out_path) // 1024
-    print(f"  ✅ PDF: {out_path} ({size} KB)")
+    kb = os.path.getsize(out_path) // 1024
+    print(f"  ✅ {os.path.basename(out_path)} ({kb} KB)")
 
-
-def build_all_pdfs(data, today_str):
-    """Build all 4 PDFs and return their paths."""
+def build_all_pdfs(data, date_str):
     print("\n🎨 Building PDFs...")
-
-    am  = b64font(f"{FONT_DIR}/Amiri-Regular.ttf")
-    amb = b64font(f"{FONT_DIR}/Amiri-Bold.ttf")
-    dv  = b64font(f"{FONT_DIR}/DejaVuSans.ttf")
-    dvb = b64font(f"{FONT_DIR}/DejaVuSans-Bold.ttf")
-    css = build_css(am, amb, dv, dvb)
-
-    wrap = lambda body: f"""<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><style>{css}</style></head>
-<body>{body}</body></html>"""
-
-    date_safe = today_str.replace(",", "").replace(" ", "_")
-    out_dir   = os.getcwd()
-    os.makedirs(out_dir, exist_ok=True)
-
+    am  = b64f(f"{FONT_DIR}/Amiri-Regular.ttf")
+    amb = b64f(f"{FONT_DIR}/Amiri-Bold.ttf")
+    dv  = b64f(f"{FONT_DIR}/DejaVuSans.ttf")
+    dvb = b64f(f"{FONT_DIR}/DejaVuSans-Bold.ttf")
+    out = os.getcwd()
+    ds  = date_str.replace(",","").replace(" ","_")
     pdfs = {}
     configs = [
-        ("ar_stocks",  wrap(build_part1_ar(data, today_str)), f"{out_dir}/briefing_ar_stocks_{date_safe}.pdf"),
-        ("ar_crypto",  wrap(build_part2_ar(data, today_str)), f"{out_dir}/briefing_ar_crypto_{date_safe}.pdf"),
-        ("en_stocks",  wrap(build_part1_en(data, today_str)), f"{out_dir}/briefing_en_stocks_{date_safe}.pdf"),
-        ("en_crypto",  wrap(build_part2_en(data, today_str)), f"{out_dir}/briefing_en_crypto_{date_safe}.pdf"),
+        ("portfolio_ar",  build_portfolio_ar(data, date_str, am, amb, dv, dvb), f"{out}/1_portfolio_ar_{ds}.pdf"),
+        ("market_ar",     build_market_ar(data, date_str, am, amb, dv, dvb),    f"{out}/2_market_ar_{ds}.pdf"),
+        ("market_en",     build_market_en(data, date_str, am, amb, dv, dvb),    f"{out}/3_market_en_{ds}.pdf"),
     ]
-
     for key, html, path in configs:
         build_pdf(html, path)
         pdfs[key] = path
-
     return pdfs
 
-
-# ── EMAIL SENDER ─────────────────────────────────────────────
-
-def upload_pdf_to_github(local_path: str, gh_filename: str) -> str:
-    """Upload PDF to GitHub repo and return raw URL."""
+# ── UPLOAD & EMAIL ────────────────────────────────────────────
+def upload_pdf(local_path, gh_name):
     with open(local_path, "rb") as f:
-        content_b64 = base64.b64encode(f.read()).decode()
+        b64 = base64.b64encode(f.read()).decode()
+    H = {"Authorization": f"token {GITHUB_PAT}",
+         "Accept": "application/vnd.github.v3+json",
+         "Content-Type": "application/json"}
+    api = f"https://api.github.com/repos/{GITHUB_REPO}/contents/reports/{gh_name}"
+    chk = requests.get(api, headers=H)
+    sha = chk.json().get("sha") if chk.status_code == 200 else None
+    up  = {"message": f"Update {gh_name}", "content": b64, "branch": "main"}
+    if sha: up["sha"] = sha
+    r = requests.put(api, headers=H, json=up)
+    if r.status_code in (200, 201):
+        url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/reports/{gh_name}"
+        print(f"  ✅ Uploaded: {gh_name}")
+        return url
+    print(f"  ⚠️ Upload failed: {r.status_code}")
+    return ""
 
-    api_path = f"https://api.github.com/repos/{GITHUB_REPO}/contents/reports/{gh_filename}"
-    headers  = {
-        "Authorization": f"token {GITHUB_PAT}",
-        "Accept": "application/vnd.github.v3+json",
-        "Content-Type": "application/json",
-    }
-
-    # Check if file exists (need SHA to update)
-    check = requests.get(api_path, headers=headers)
-    sha = check.json().get("sha") if check.status_code == 200 else None
-
-    payload = {"message": f"Update {gh_filename}", "content": content_b64, "branch": "main"}
-    if sha:
-        payload["sha"] = sha
-
-    resp = requests.put(api_path, headers=headers, json=payload)
-    if resp.status_code in (200, 201):
-        raw_url = f"https://raw.githubusercontent.com/{GITHUB_REPO}/main/reports/{gh_filename}"
-        print(f"  ✅ Uploaded: {raw_url}")
-        return raw_url
-    else:
-        print(f"  ⚠️  Upload failed: {resp.status_code} {resp.text[:100]}")
-        return ""
-
-
-def send_email_via_github(subject: str, body: str) -> bool:
-    """Trigger GitHub dispatch to send email via Resend relay."""
-    headers = {
-        "Authorization": f"token {GITHUB_PAT}",
-        "Accept": "application/vnd.github.v3+json",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "event_type": "send-email",
-        "client_payload": {
-            "from":    EMAIL_FROM,
-            "to":      EMAIL_TO,
-            "subject": subject,
-            "text":    body,
-        }
-    }
-    resp = requests.post(
+def send_email(subject, body):
+    H = {"Authorization": f"token {GITHUB_PAT}",
+         "Accept": "application/vnd.github.v3+json",
+         "Content-Type": "application/json"}
+    payload = {"event_type": "send-email", "client_payload": {
+        "from": EMAIL_FROM, "to": EMAIL_TO,
+        "subject": subject, "text": body
+    }}
+    r = requests.post(
         f"https://api.github.com/repos/{GITHUB_REPO}/dispatches",
-        headers=headers, json=payload
-    )
-    if resp.status_code == 204:
-        print("  ✅ Email dispatched via GitHub Actions")
-        return True
+        headers=H, json=payload)
+    if r.status_code == 204:
+        print("  ✅ Email dispatched!")
     else:
-        print(f"  ⚠️  Dispatch failed: {resp.status_code} {resp.text[:100]}")
-        return False
+        print(f"  ⚠️ Email failed: {r.status_code}")
 
-
-def send_briefing(pdfs: dict, data: dict, today_str: str):
-    """Upload PDFs to GitHub and send email with download links."""
-    print("\n📧 Uploading PDFs and sending email...")
-
-    date_safe = today_str.replace(",", "").replace(" ", "_")
-    pdf_urls  = {}
-
+def send_briefing(pdfs, data, date_str):
+    print("\n📧 Uploading and sending email...")
+    time.sleep(2)
+    urls = {}
     for key, path in pdfs.items():
-        fname = os.path.basename(path)
-        url = upload_pdf_to_github(path, fname)
-        if url:
-            pdf_urls[key] = url
+        name = os.path.basename(path)
+        url  = upload_pdf(path, name)
+        if url: urls[key] = url
         time.sleep(1)
+    time.sleep(4)
 
-    time.sleep(3)  # Let GitHub propagate
+    # Build quick summary for email body
+    lines_s, lines_c = [], []
+    t_cost = t_val = 0
+    for s in PORTFOLIO["stocks"]:
+        q = data["stocks"][s["sym"]].get("quote", {})
+        cur = q.get("price", s["buy"])
+        val = s["qty"] * cur
+        cost= s["qty"] * s["buy"]
+        pnl = ((val-cost)/cost)*100
+        t_cost += cost; t_val += val
+        lines_s.append(f"  {s['sym']:5} {fmt_price(cur):>10}  {'+' if pnl>=0 else ''}{pnl:.1f}%")
+    for c in PORTFOLIO["crypto"]:
+        p = data["crypto"][c["sym"]].get("price", {})
+        cur = p.get("price", c["buy"])
+        val = c["qty"] * cur
+        cost= c["qty"] * c["buy"]
+        pnl = ((val-cost)/cost)*100
+        t_cost += cost; t_val += val
+        lines_c.append(f"  {c['sym']:5} {fmt_price(cur,c['sym']):>14}  {'+' if pnl>=0 else ''}{pnl:.1f}%")
 
-    # Build stock summary for email body
-    stock_lines = []
-    for sym in STOCKS:
-        q = data["stocks"][sym].get("quote", {})
-        if q:
-            price = fmt_price(q.get("price", 0))
-            chg   = q.get("chg_pct", "0")
-            arrow = "▲" if float(chg) >= 0 else "▼"
-            stock_lines.append(f"  {sym}: {price} {arrow}{abs(float(chg)):.2f}%")
+    t_pnl = t_val - t_cost
+    t_pct = (t_pnl/t_cost)*100 if t_cost else 0
 
-    crypto_lines = []
-    for sym in ["XRP", "SOL", "HBAR", "ADA"]:
-        pd = data["crypto"].get(sym, {}).get("price", {})
-        if pd:
-            price = fmt_price(pd.get("price", 0), sym)
-            crypto_lines.append(f"  {sym}: {price}")
+    body = f"""صباح الخير سيف 🌅
 
-    body = f"""السلام عليكم سيف،
+تقاريرك الصباحية جاهزة — {date_str}
 
-📊 التقرير الصباحي لمحفظتك — {today_str}
-════════════════════════════════════
-
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📈 الأسهم:
-{chr(10).join(stock_lines) or '  بيانات غير متاحة'}
+{chr(10).join(lines_s)}
 
-₿ الكريبتو (مختارات):
-{chr(10).join(crypto_lines) or '  بيانات غير متاحة'}
+₿ الكريبتو:
+{chr(10).join(lines_c)}
 
-════════════════════════════════════
-📥 روابط تحميل التقارير:
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+💼 إجمالي المحفظة:
+   الاستثمار: {fmt_price(t_cost)}
+   القيمة الحالية: {fmt_price(t_val)}
+   الربح/الخسارة: {'+' if t_pnl>=0 else ''}{fmt_price(t_pnl)} ({'+' if t_pct>=0 else ''}{t_pct:.1f}%)
 
-🇸🇦 عربي — الأسهم:
-{pdf_urls.get('ar_stocks', 'غير متاح')}
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+📥 التقارير الكاملة (3 ملفات PDF):
 
-🇸🇦 عربي — الكريبتو وخطة العمل:
-{pdf_urls.get('ar_crypto', 'غير متاح')}
+🇸🇦 محفظتك الشخصية (عربي):
+{urls.get('portfolio_ar', 'غير متاح')}
 
-🇬🇧 English — Stocks:
-{pdf_urls.get('en_stocks', 'N/A')}
+🇸🇦 تحليل السوق + فرص الدخول (عربي):
+{urls.get('market_ar', 'غير متاح')}
 
-🇬🇧 English — Crypto & Action Plan:
-{pdf_urls.get('en_crypto', 'N/A')}
+🇬🇧 Market Analysis + Opportunities (English):
+{urls.get('market_en', 'N/A')}
 
-════════════════════════════════════
-⚠️  هذا التقرير للأغراض المعلوماتية فقط وليس نصيحة مالية.
-تم الإنتاج بواسطة Claude · Alpha Vantage MCP
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+🤖 Claude · Alpha Vantage MCP
+⚠️ للأغراض المعلوماتية فقط · ليس نصيحة مالية
 """
+    send_email(f"📊 تقاريرك الصباحية | {date_str}", body)
 
-    subject = f"📊 تقرير الصباح — محفظتك | {today_str}"
-    send_email_via_github(subject, body)
-
-
-# ── MAIN ─────────────────────────────────────────────────────
-
+# ── MAIN ──────────────────────────────────────────────────────
 def run():
-    now      = datetime.datetime.now()
-    today_ar = now.strftime("%A, %B %d, %Y")  # e.g. "Sunday, June 08, 2026"
-
-    print(f"\n{'='*55}")
-    print(f"  MORNING BRIEFING AGENT — {today_ar}")
-    print(f"{'='*55}")
-
-    # 1. Collect data
-    data = collect_all_data()
-
-    # 2. Build PDFs
-    pdfs = build_all_pdfs(data, today_ar)
-
-    # 3. Send email
-    send_briefing(pdfs, data, today_ar)
-
-    print(f"\n✅ Briefing complete — {today_ar}\n")
-    return pdfs, data
+    now       = datetime.datetime.now()
+    date_str  = now.strftime("%A, %B %d, %Y")
+    print(f"\n{'='*50}")
+    print(f"  MORNING BRIEFING — {date_str}")
+    print(f"{'='*50}")
+    data = collect_data()
+    pdfs = build_all_pdfs(data, date_str)
+    send_briefing(pdfs, data, date_str)
+    print(f"\n✅ Done — {date_str}\n")
 
 if __name__ == "__main__":
     run()
