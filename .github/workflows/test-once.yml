@@ -1,0 +1,34 @@
+name: One-Time Test Briefing
+
+on:
+  schedule:
+    - cron: "57 18 * * *"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install packages
+        run: pip install --quiet playwright requests arabic-reshaper python-bidi yfinance
+
+      - name: Install Chromium
+        run: python -m playwright install chromium --with-deps
+
+      - name: Verify fonts
+        run: ls -lh fonts/
+
+      - name: Run agent
+        env:
+          AV_KEY: ${{ secrets.AV_KEY }}
+          BRIEFING_PAT: ${{ secrets.BRIEFING_PAT }}
+          RESEND_KEY: ${{ secrets.RESEND_KEY }}
+        run: python morning_briefing_agent.py
