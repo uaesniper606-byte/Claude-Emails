@@ -601,18 +601,18 @@ def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", ti
         q = data["stocks"][sym].get("quote", {})
         cur = q.get("price", s["buy"])
         pnl_p = ((cur - s["buy"]) / s["buy"]) * 100
-        act, css_cls = actions.get(sym, ("احتفظ", "hl"))
+        act, analysis, catalyst, css_cls = rich.get(sym, ("احتفظ","","","hl"))
         col = s["color"]
-        html += f'<tr><td><strong style="color:#{col}">{sym}</strong></td><td style="font-family:DV">{fmt_price(cur)}</td><td class="{css_cls}" style="font-family:DV">{arrow(pnl_p)}{abs(pnl_p):.1f}%</td><td class="{css_cls}">{act}</td></tr>'
+        html += f'<tr><td><strong style="color:#{col}">{sym}</strong></td><td style="font-family:DV;font-size:10px">{fmt_price(s["buy"])}</td><td style="font-family:DV;font-weight:700">{fmt_price(cur)}</td><td class="{css_cls}" style="font-family:DV;font-weight:700">{arrow(pnl_p)}{abs(pnl_p):.1f}%</td><td class="{css_cls}">{act}</td><td style="font-size:10px;color:#4a5568">{catalyst[:70]}</td></tr>'
 
     for c in PORTFOLIO["crypto"]:
         sym = c["sym"]
         p = data["crypto"][sym].get("price", {})
         cur = p.get("price", c["buy"])
         pnl_p = ((cur - c["buy"]) / c["buy"]) * 100
-        act, css_cls = actions.get(sym, ("احتفظ", "hl"))
+        act, analysis, catalyst, css_cls = rich.get(sym, ("احتفظ","","","hl"))
         col = c["color"]
-        html += f'<tr><td><strong style="color:#{col}">{sym}</strong></td><td style="font-family:DV">{fmt_price(cur,sym)}</td><td class="{css_cls}" style="font-family:DV">{arrow(pnl_p)}{abs(pnl_p):.1f}%</td><td class="{css_cls}">{act}</td></tr>'
+        html += f'<tr><td><strong style="color:#{col}">{sym}</strong></td><td style="font-family:DV;font-size:10px">{fmt_price(c["buy"],sym)}</td><td style="font-family:DV;font-weight:700">{fmt_price(cur,sym)}</td><td class="{css_cls}" style="font-family:DV;font-weight:700">{arrow(pnl_p)}{abs(pnl_p):.1f}%</td><td class="{css_cls}">{act}</td><td style="font-size:10px;color:#4a5568">{catalyst[:70]}</td></tr>'
 
     html += f"""
 </table>
