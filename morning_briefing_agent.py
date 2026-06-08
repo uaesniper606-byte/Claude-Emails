@@ -596,6 +596,267 @@ def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", ti
 # ════════════════════════════════════════════════════════════
 # PDF 2 & 3: MARKET ANALYSIS (AR + EN)
 # ════════════════════════════════════════════════════════════
+
+def build_portfolio_en(data, date_str, session_en="Morning", icon="🌅", time_gst="10:30 GST", am="", amb="", dv="", dvb=""):
+    css = build_css(am, amb, dv, dvb)
+    port = PORTFOLIO
+
+    # Totals
+    s_cost = s_val = 0
+    for s in port["stocks"]:
+        q   = data["stocks"][s["sym"]].get("quote", {})
+        cur = q.get("price", s["buy"])
+        s_cost += s["qty"] * s["buy"]
+        s_val  += s["qty"] * cur
+
+    c_cost = c_val = 0
+    for c in port["crypto"]:
+        p   = data["crypto"][c["sym"]].get("price", {})
+        cur = p.get("price", c["buy"])
+        c_cost += c["qty"] * c["buy"]
+        c_val  += c["qty"] * cur
+
+    t_cost = s_cost + c_cost
+    t_val  = s_val  + c_val
+    t_pnl  = t_val  - t_cost
+    t_pct  = (t_pnl / t_cost) * 100 if t_cost else 0
+
+    def pnl_color(v): return "#c53030" if v < 0 else "#276749"
+    def arrow(v):     return "▼" if v < 0 else "▲"
+
+    # ── English Stock Cards ────────────────────────────────────
+    stock_cards = ""
+    for s in port["stocks"]:
+        sym  = s["sym"]
+        q    = data["stocks"][sym].get("quote", {})
+        news = data["stocks"][sym].get("news", [])
+
+        cur    = q.get("price", s["buy"])
+        chg_p  = float(q.get("chg_pct", 0))
+        vol    = fmt_vol(q.get("volume", 0))
+        cost   = s["qty"] * s["buy"]
+        val    = s["qty"] * cur
+        pnl    = val - cost
+        pnl_p  = (pnl / cost) * 100 if cost else 0
+        col    = s["color"]
+        hi     = fmt_price(q.get("high", 0))
+        lo     = fmt_price(q.get("low", 0))
+
+        # Extended hours
+        post_p = q.get("post_price")
+        post_c = q.get("post_chg_pct")
+        pre_p  = q.get("pre_price")
+        pre_c  = q.get("pre_chg_pct")
+
+        # Badges
+        ext_badge = ""
+        if post_p and post_c is not None:
+            psgn = "▲" if post_c >= 0 else "▼"
+            pcol = "#276749" if post_c >= 0 else "#c53030"
+            ext_badge += f'''<span class="stag" style="background:{pcol}18;color:{pcol};font-weight:700;border:1px solid {pcol}40">🌙 After-Hours: {fmt_price(post_p)} {psgn}{abs(post_c):.2f}%</span>'''
+        if pre_p and pre_c is not None:
+            prsgn = "▲" if pre_c >= 0 else "▼"
+            prcol = "#276749" if pre_c >= 0 else "#c53030"
+            ext_badge += f'''<span class="stag" style="background:{prcol}18;color:{prcol};font-weight:700;border:1px solid {prcol}40">🌅 Pre-Market: {fmt_price(pre_p)} {prsgn}{abs(pre_c):.2f}%</span>'''
+
+        # Analysis text
+        ext_analysis = ""
+        if post_p and post_c is not None:
+            if abs(post_c) >= 1.0:
+                move = "surged" if post_c > 0 else "dropped"
+                strength = "sharply" if abs(post_c) > 3 else "moderately"
+                ext_analysis += f"{sym} {move} {strength} in after-hours ({'+' if post_c>0 else ''}{post_c:.2f}%) reaching {fmt_price(post_p)}. "
+            else:
+                ext_analysis += f"{sym} traded flat after-hours ({'+' if post_c>0 else ''}{post_c:.2f}%). "
+        if pre_p and pre_c is not None:
+            if abs(pre_c) >= 0.5:
+                move2   = "rising" if pre_c > 0 else "falling"
+                signal  = "positive open signal" if pre_c > 0 else "pre-market selling pressure"
+                ext_analysis += f"Pre-Market: {sym} {move2} {abs(pre_c):.2f}% at {fmt_price(pre_p)} — {signal}."
+            else:
+                ext_analysis += f"Pre-Market: quiet trading at {fmt_price(pre_p)}."
+
+        news_html = "".join(f"<li>{n['title'][:115]}</li>" for n in news[:4])
+        chg_col = pnl_color(chg_p)
+
+        stock_cards += f"""
+<div class="scard" style="border-top:3px solid #{col};direction:ltr">
+  <div class="scard-top">
+    <div class="scard-row">
+      <div>
+        <div class="scard-sym" style="color:#{col}">{sym}</div>
+        <div class="scard-name">{s['name_en']}</div>
+      </div>
+      <div style="text-align:right">
+        <div class="scard-price">{fmt_price(cur)}</div>
+        <div style="font-family:DV;font-size:11px;color:{chg_col}">{arrow(chg_p)} {abs(chg_p):.2f}% &nbsp;|&nbsp; Vol: {vol}</div>
+      </div>
+    </div>
+  </div>
+  <div class="scard-meta">
+    <span class="stag">{s['qty']} shares × {fmt_price(s['buy'])} entry</span>
+    <span class="stag">H: {hi} | L: {lo}</span>
+    <span class="stag-e">⚠ Earnings: {s['earn']}</span>
+    <span class="{'stag-buy' if pnl>=0 else 'stag-loss'}">{arrow(pnl_p)} {abs(pnl_p):.1f}%</span>
+  </div>
+  {f'<div style="padding:6px 15px;background:#f0f9ff;border-bottom:1px solid #e0f0ff;display:flex;gap:8px;flex-wrap:wrap">' + ext_badge + '</div>' if ext_badge else ""}
+  {f'<div style="padding:7px 15px;background:#fffdf0;border-bottom:1px solid #fef3c7;font-size:11px;color:#374151;line-height:1.6">' + ext_analysis + '</div>' if ext_analysis else ""}
+  <div class="scard-news"><ul>{news_html if news_html else "<li>No news available</li>"}</ul></div>
+  <div class="pnl-box">
+    <div class="tot-item">
+      <div class="pnl-lbl">Total Cost</div>
+      <div class="pnl-val" style="color:#374151">{fmt_price(cost)}</div>
+    </div>
+    <div class="tot-item">
+      <div class="pnl-lbl">Market Value</div>
+      <div class="pnl-val" style="color:#0f2d5a">{fmt_price(val)}</div>
+    </div>
+    <div class="tot-item">
+      <div class="pnl-lbl">P&L</div>
+      <div class="pnl-val" style="color:{pnl_color(pnl)}">{'+' if pnl>=0 else ''}{fmt_price(pnl)}</div>
+    </div>
+  </div>
+</div>"""
+
+    # ── English Crypto Cards ───────────────────────────────────
+    crypto_cards = ""
+    cat_map = {"مدفوعات":"PAYMENTS","بنية تحتية":"INFRA","الطبقة 2":"LAYER2","ميم":"MEME","ألعاب":"GAMING"}
+    cat_styles = {
+        "PAYMENTS": "background:#dcfce7;color:#166534",
+        "INFRA":    "background:#dbeafe;color:#1e40af",
+        "LAYER2":   "background:#ede9fe;color:#6d28d9",
+        "MEME":     "background:#fee2e2;color:#991b1b",
+        "GAMING":   "background:#fef3c7;color:#92400e",
+    }
+    for c in port["crypto"]:
+        sym  = c["sym"]
+        p    = data["crypto"][sym].get("price", {})
+        news = data["crypto"][sym].get("news", [])
+        cur  = p.get("price", c["buy"])
+        cost = c["qty"] * c["buy"]
+        val  = c["qty"] * cur
+        pnl  = val - cost
+        pnl_p= (pnl / cost) * 100 if cost else 0
+        col  = c["color"]
+        cat_en = cat_map.get(c["cat"], c["cat"])
+        cs   = cat_styles.get(cat_en, "")
+        news_html2 = "".join(
+            f'''<div style='font-size:10px;color:#4a5568;margin-bottom:3px;border-left:2px solid #{col};padding-left:6px'>{n["title"][:95]}</div>'''
+            for n in news[:3])
+
+        crypto_cards += f"""
+<div class="ccard" style="border-top:3px solid #{col};direction:ltr">
+  <div class="ccard-sym" style="color:#{col}">{sym}</div>
+  <div style="font-size:9px;color:#718096">{c['name_en']}</div>
+  <div class="ccard-price">{fmt_price(cur, sym)}</div>
+  <div class="ccard-cat" style="{cs}">{cat_en}</div>
+  <div style="margin-bottom:5px">
+    <span style="font-size:10px;font-weight:700;color:{pnl_color(pnl_p)}">
+      {arrow(pnl_p)} {abs(pnl_p):.1f}% &nbsp;|&nbsp; {'+' if pnl>=0 else ''}{fmt_price(pnl)}
+    </span>
+  </div>
+  <div style="font-size:9px;color:#718096;margin-bottom:5px">
+    Qty: <span style="font-family:DV">{c['qty']:,.4f}</span> × <span style="font-family:DV">{fmt_price(c['buy'],sym)}</span>
+  </div>
+  {news_html2}
+</div>"""
+
+    s_pnl = s_val - s_cost
+    c_pnl = c_val - c_cost
+
+    # Action table
+    actions_en = {
+        "MU":   ("HOLD · Do NOT add pre-Jun 24 earnings", "warn"),
+        "NOW":  ("ACCUMULATE toward $100-105",             "pos"),
+        "PLTR": ("HOLD · Accumulate below $120",           "pos"),
+        "CBRS": ("HOLD · Monitor Form 4 daily",            "neg"),
+        "XRP":  ("HOLD · Add small on weakness",           "pos"),
+        "SOL":  ("HOLD · Strong fundamentals",             "hl"),
+        "HBAR": ("HOLD · High conviction long-term",       "pos"),
+        "SHIB": ("HOLD ONLY · No additions",               "neg"),
+        "ADA":  ("HOLD · Wait Q4 mainnet",                 "hl"),
+        "ARB":  ("HOLD · Last priority",                   "hl"),
+        "DOT":  ("NEUTRAL HOLD",                           "hl"),
+        "GALA": ("HOLD ONLY · Monitor pipeline",           "neg"),
+    }
+    action_rows = ""
+    for s in port["stocks"]:
+        sym = s["sym"]
+        q2  = data["stocks"][sym].get("quote", {})
+        cur2= q2.get("price", s["buy"])
+        pp  = ((cur2 - s["buy"]) / s["buy"]) * 100
+        act, css = actions_en.get(sym, ("HOLD", "hl"))
+        action_rows += f'''<tr><td><strong style="color:#{s["color"]}">{sym}</strong></td><td style="font-family:DV">{fmt_price(cur2)}</td><td style="font-family:DV;color:{("#276749" if pp>=0 else "#c53030")}">{arrow(pp)}{abs(pp):.1f}%</td><td class="{css}">{act}</td></tr>'''
+    for c in port["crypto"]:
+        sym = c["sym"]
+        p2  = data["crypto"][sym].get("price", {})
+        cur2= p2.get("price", c["buy"])
+        pp  = ((cur2 - c["buy"]) / c["buy"]) * 100
+        act, css = actions_en.get(sym, ("HOLD", "hl"))
+        action_rows += f'''<tr><td><strong style="color:#{c["color"]}">{sym}</strong></td><td style="font-family:DV">{fmt_price(cur2, sym)}</td><td style="font-family:DV;color:{("#276749" if pp>=0 else "#c53030")}">{arrow(pp)}{abs(pp):.1f}%</td><td class="{css}">{act}</td></tr>'''
+
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>{css}</style></head>
+<body>
+<!-- PAGE 1: STOCKS EN -->
+<div class="page en">
+<div class="hdr">
+  <div>
+    <div class="hdr-badge">Saif's Portfolio · {session_en} {icon} · Stocks</div>
+    <div class="hdr-title">My Portfolio — Stocks</div>
+    <div class="hdr-sub">MU · NOW · PLTR · CBRS</div>
+  </div>
+  <div style="text-align:right">
+    <div style="font-size:18px;font-weight:700;color:#fff">{date_str}</div>
+    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">{time_gst}</div>
+  </div>
+</div>
+
+<div class="total-row">
+  <div class="tot-item"><div class="tot-val">{fmt_price(s_cost)}</div><div class="tot-lbl">Total Cost</div></div>
+  <div class="tot-item"><div class="tot-val">{fmt_price(s_val)}</div><div class="tot-lbl">Market Value</div></div>
+  <div class="tot-item"><div class="tot-val" style="color:{pnl_color(s_pnl)}">{'+' if s_pnl>=0 else ''}{fmt_price(s_pnl)}</div><div class="tot-lbl">P&L ($)</div></div>
+  <div class="tot-item"><div class="tot-val" style="color:{pnl_color(s_pnl)}">{'+' if s_pnl>=0 else ''}{((s_val-s_cost)/s_cost*100):.1f}%</div><div class="tot-lbl">P&L (%)</div></div>
+</div>
+
+<div class="sec"><div class="dot"></div>📈 STOCKS — Performance, News & P&L</div>
+<div class="g2">{stock_cards}</div>
+<div class="footer">Saif's Portfolio · Stocks · {date_str} · For informational purposes only · Not financial advice</div>
+</div>
+
+<!-- PAGE 2: CRYPTO + ACTION EN -->
+<div class="page en">
+<div style="background:linear-gradient(135deg,#0f2d5a,#1d4ed8);border-radius:12px;padding:16px 24px;margin-bottom:16px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 4px 16px rgba(29,78,216,.22)">
+  <div><div style="font-size:10px;color:rgba(255,255,255,.65);margin-bottom:3px">Portfolio · Crypto & Action Plan</div>
+  <div style="font-size:19px;font-weight:700;color:#fff">My Crypto + Full Action Plan</div></div>
+  <div style="font-size:10.5px;color:rgba(255,255,255,.75)">{date_str} · {time_gst}</div>
+</div>
+
+<div class="total-row">
+  <div class="tot-item"><div class="tot-val">{fmt_price(c_cost)}</div><div class="tot-lbl">Crypto Cost</div></div>
+  <div class="tot-item"><div class="tot-val">{fmt_price(c_val)}</div><div class="tot-lbl">Crypto Value</div></div>
+  <div class="tot-item"><div class="tot-val" style="color:{pnl_color(c_pnl)}">{'+' if c_pnl>=0 else ''}{fmt_price(c_pnl)}</div><div class="tot-lbl">Crypto P&L</div></div>
+  <div class="tot-item"><div class="tot-val" style="color:{pnl_color(t_pct)}">{'+' if t_pct>=0 else ''}{t_pct:.1f}%</div><div class="tot-lbl">Total Portfolio P&L</div></div>
+</div>
+
+<div class="sec"><div class="dot"></div>₿ CRYPTO — Prices & News</div>
+<div class="g4">{crypto_cards}</div>
+
+<div class="sec"><div class="dot"></div>⚡ ACTION PLAN — My Direct Recommendations</div>
+<table class="tbl" style="direction:ltr">
+<tr><th>Asset</th><th>Price</th><th>P&L %</th><th>Action</th></tr>
+{action_rows}
+</table>
+
+<div class="bline">
+  <h3>⚡ Bottom Line</h3>
+  <p>Your portfolio is under macro pressure from three converging forces: AI valuation reset post-Broadcom, rate-hike fears from the strong jobs report, and oil pressure from the Iran/Hormuz crisis. <strong>None of this invalidates the structural thesis</strong> of your positions.<br><br>
+  Top 3 priorities: (1) June 10 CPI — if cool, add to NOW near $100. (2) Watch CBRS Form 4 filings daily — lockup expiry is your #1 near-term risk. (3) Do nothing on MU until June 24 earnings — binary event.</p>
+</div>
+<div class="footer">Saif's Portfolio · Crypto & Action Plan · {date_str} · For informational purposes only · Not financial advice</div>
+</div>
+</body></html>"""
+
 def build_market_ar(data, date_str, session="الصباحي", icon="🌅", time_gst="10:30 GST", am="", amb="", dv="", dvb=""):
     css = build_css(am, amb, dv, dvb)
     return f"""<!DOCTYPE html>
@@ -881,8 +1142,9 @@ def build_all_pdfs(data, date_str, session="الصباحي", session_en="Morning
     pdfs = {}
     configs = [
         ("portfolio_ar",  build_portfolio_ar(data, date_str, session, icon, time_gst, am, amb, dv, dvb), f"{out}/1_portfolio_ar_{ds}.pdf"),
-        ("market_ar",     build_market_ar(data, date_str, session, icon, time_gst, am, amb, dv, dvb),    f"{out}/2_market_ar_{ds}.pdf"),
-        ("market_en",     build_market_en(data, date_str, session_en, icon, time_gst, am, amb, dv, dvb), f"{out}/3_market_en_{ds}.pdf"),
+        ("portfolio_en",  build_portfolio_en(data, date_str, session_en, icon, time_gst, am, amb, dv, dvb), f"{out}/2_portfolio_en_{ds}.pdf"),
+        ("market_ar",     build_market_ar(data, date_str, session, icon, time_gst, am, amb, dv, dvb),    f"{out}/3_market_ar_{ds}.pdf"),
+        ("market_en",     build_market_en(data, date_str, session_en, icon, time_gst, am, amb, dv, dvb), f"{out}/4_market_en_{ds}.pdf"),
     ]
     for key, html, path in configs:
         build_pdf(html, path)
@@ -977,10 +1239,13 @@ def send_briefing(pdfs, data, date_str, session="الصباحي", session_en="Mo
    الربح/الخسارة: {'+' if t_pnl>=0 else ''}{fmt_price(t_pnl)} ({'+' if t_pct>=0 else ''}{t_pct:.1f}%)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📥 التقارير الكاملة (3 ملفات PDF):
+📥 التقارير الكاملة (4 ملفات PDF):
 
 🇸🇦 محفظتك الشخصية (عربي):
 {urls.get('portfolio_ar', 'غير متاح')}
+
+🇬🇧 Your Portfolio (English):
+{urls.get('portfolio_en', 'N/A')}
 
 🇸🇦 تحليل السوق + فرص الدخول (عربي):
 {urls.get('market_ar', 'غير متاح')}
