@@ -158,6 +158,9 @@ def collect_data():
         data["crypto"][sym] = {"price": price, "news": news}
         time.sleep(1.2)
 
+    # Fetch real-time prices for opportunity assets
+    print("  Fetching opportunity asset prices...")
+    data["opp_prices"] = fetch_opportunity_prices()
     print("✅ Data collected.\n")
     return data
 
@@ -857,6 +860,38 @@ def build_portfolio_en(data, date_str, session_en="Morning", icon="🌅", time_g
 </div>
 </body></html>"""
 
+
+def fetch_opportunity_prices() -> dict:
+    """Fetch real-time prices for opportunity assets using yfinance."""
+    prices = {}
+    # Stocks to watch
+    for sym in ["BTC-USD", "COIN", "AMD", "XLM-USD", "ETH-USD"]:
+        try:
+            import yfinance as yf
+            t    = yf.Ticker(sym)
+            info = t.info
+            price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose") or 0
+            prev  = info.get("previousClose") or price
+            chg_p = ((price - prev) / prev * 100) if prev else 0
+            # Pre/Post market
+            pre_p  = info.get("preMarketPrice")
+            pre_c  = info.get("preMarketChangePercent")
+            post_p = info.get("postMarketPrice")
+            post_c = info.get("postMarketChangePercent")
+            prices[sym] = {
+                "price":     round(float(price), 4),
+                "chg_pct":   round(float(chg_p), 2),
+                "pre_price": round(float(pre_p), 4) if pre_p else None,
+                "pre_chg":   round(float(pre_c)*100, 2) if pre_c else None,
+                "post_price":round(float(post_p), 4) if post_p else None,
+                "post_chg":  round(float(post_c)*100, 2) if post_c else None,
+            }
+            time.sleep(0.3)
+        except Exception as e:
+            print(f"  ⚠️ Opp price error {sym}: {e}")
+            prices[sym] = {"price": 0, "chg_pct": 0}
+    return prices
+
 def build_market_ar(data, date_str, session="الصباحي", icon="🌅", time_gst="10:30 GST", am="", amb="", dv="", dvb=""):
     css = build_css(am, amb, dv, dvb)
     return f"""<!DOCTYPE html>
@@ -1142,9 +1177,8 @@ def build_all_pdfs(data, date_str, session="الصباحي", session_en="Morning
     pdfs = {}
     configs = [
         ("portfolio_ar",  build_portfolio_ar(data, date_str, session, icon, time_gst, am, amb, dv, dvb), f"{out}/1_portfolio_ar_{ds}.pdf"),
-        ("portfolio_en",  build_portfolio_en(data, date_str, session_en, icon, time_gst, am, amb, dv, dvb), f"{out}/2_portfolio_en_{ds}.pdf"),
-        ("market_ar",     build_market_ar(data, date_str, session, icon, time_gst, am, amb, dv, dvb),    f"{out}/3_market_ar_{ds}.pdf"),
-        ("market_en",     build_market_en(data, date_str, session_en, icon, time_gst, am, amb, dv, dvb), f"{out}/4_market_en_{ds}.pdf"),
+        ("market_ar",     build_market_ar(data, date_str, session, icon, time_gst, am, amb, dv, dvb),    f"{out}/2_market_ar_{ds}.pdf"),
+        ("market_en",     build_market_en(data, date_str, session_en, icon, time_gst, am, amb, dv, dvb), f"{out}/3_market_en_{ds}.pdf"),
     ]
     for key, html, path in configs:
         build_pdf(html, path)
@@ -1239,13 +1273,10 @@ def send_briefing(pdfs, data, date_str, session="الصباحي", session_en="Mo
    الربح/الخسارة: {'+' if t_pnl>=0 else ''}{fmt_price(t_pnl)} ({'+' if t_pct>=0 else ''}{t_pct:.1f}%)
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-📥 التقارير الكاملة (4 ملفات PDF):
+📥 التقارير الكاملة (3 ملفات PDF):
 
 🇸🇦 محفظتك الشخصية (عربي):
 {urls.get('portfolio_ar', 'غير متاح')}
-
-🇬🇧 Your Portfolio (English):
-{urls.get('portfolio_en', 'N/A')}
 
 🇸🇦 تحليل السوق + فرص الدخول (عربي):
 {urls.get('market_ar', 'غير متاح')}
