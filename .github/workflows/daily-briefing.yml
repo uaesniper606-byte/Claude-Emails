@@ -24,7 +24,7 @@ jobs:
           python-version: "3.11"
 
       - name: Install packages
-        run: pip install --quiet playwright requests arabic-reshaper python-bidi
+        run: pip install --quiet playwright requests arabic-reshaper python-bidi yfinance
 
       - name: Install Chromium
         run: python -m playwright install chromium --with-deps
