@@ -10,11 +10,6 @@ Sends 3 PDFs:
 
 import os, base64, time, datetime, requests
 from playwright.sync_api import sync_playwright
-try:
-    import yfinance as yf
-    HAS_YF = True
-except ImportError:
-    HAS_YF = False
 
 # ── CONFIG ────────────────────────────────────────────────────
 AV_KEY      = os.environ.get("AV_KEY", "HONKZR3NHFIQ59P4")
@@ -52,6 +47,7 @@ def b64f(p):
 
 # ── DATA FETCH ────────────────────────────────────────────────
 def av_get(params):
+    """Alpha Vantage — used for NEWS only (prices come from yfinance)."""
     params["apikey"] = AV_KEY
     try:
         r = requests.get(AV_BASE, params=params, timeout=15)
@@ -63,17 +59,51 @@ def av_get(params):
         return {}
 
 def fetch_quote(symbol):
-    d = av_get({"function": "GLOBAL_QUOTE", "symbol": symbol})
-    q = d.get("Global Quote", {})
-    if not q: return {}
-    return {
-        "price":   float(q.get("05. price", 0)),
-        "change":  float(q.get("09. change", 0)),
-        "chg_pct": q.get("10. change percent", "0%").replace("%",""),
-        "volume":  int(q.get("06. volume", 0)),
-        "high":    float(q.get("03. high", 0)),
-        "low":     float(q.get("04. low", 0)),
+    """Fetch real-time quote via yfinance (price, pre-market, after-hours)."""
+    result = {
+        "price": 0, "change": 0, "chg_pct": "0",
+        "volume": 0, "high": 0, "low": 0,
+        "pre_price": None, "pre_chg_pct": None,
+        "post_price": None, "post_chg_pct": None,
     }
+    try:
+        import yfinance as yf
+        t    = yf.Ticker(symbol)
+        info = t.info
+
+        # Regular session
+        price = info.get("currentPrice") or info.get("regularMarketPrice") or info.get("previousClose") or 0
+        prev  = info.get("previousClose") or info.get("regularMarketPreviousClose") or price
+        chg   = price - prev
+        chg_p = (chg / prev * 100) if prev else 0
+
+        result.update({
+            "price":   round(float(price), 2),
+            "change":  round(float(chg), 2),
+            "chg_pct": f"{chg_p:.2f}",
+            "volume":  info.get("regularMarketVolume") or info.get("volume") or 0,
+            "high":    round(float(info.get("regularMarketDayHigh") or info.get("dayHigh") or 0), 2),
+            "low":     round(float(info.get("regularMarketDayLow") or info.get("dayLow") or 0), 2),
+        })
+
+        # Pre-Market
+        pre_p = info.get("preMarketPrice")
+        pre_c = info.get("preMarketChangePercent")
+        if pre_p and pre_p > 0:
+            result["pre_price"]   = round(float(pre_p), 2)
+            result["pre_chg_pct"] = round(float(pre_c) * 100, 2) if pre_c else round((pre_p - price) / price * 100, 2)
+
+        # After-Hours
+        post_p = info.get("postMarketPrice")
+        post_c = info.get("postMarketChangePercent")
+        if post_p and post_p > 0:
+            result["post_price"]   = round(float(post_p), 2)
+            result["post_chg_pct"] = round(float(post_c) * 100, 2) if post_c else round((post_p - price) / price * 100, 2)
+
+        print(f"  {symbol}: ${result['price']} | Pre: {result['pre_price']} | Post: {result['post_price']}")
+    except Exception as e:
+        print(f"  ⚠️ yfinance error for {symbol}: {e}")
+    return result
 
 def fetch_crypto(symbol):
     d = av_get({"function": "CURRENCY_EXCHANGE_RATE",
@@ -107,27 +137,6 @@ def fmt_vol(v):
     return str(v)
 
 
-def fetch_extended_hours(symbol: str) -> dict:
-    """Fetch pre-market and after-hours prices via yfinance."""
-    result = {
-        "pre_price": None, "pre_change_pct": None,
-        "post_price": None, "post_change_pct": None,
-        "regular_close": None
-    }
-    if not HAS_YF:
-        return result
-    try:
-        t    = yf.Ticker(symbol)
-        info = t.info
-        result["regular_close"]   = info.get("regularMarketPrice") or info.get("previousClose")
-        result["pre_price"]       = info.get("preMarketPrice")
-        result["pre_change_pct"]  = info.get("preMarketChangePercent")
-        result["post_price"]      = info.get("postMarketPrice")
-        result["post_change_pct"] = info.get("postMarketChangePercent")
-    except Exception as e:
-        print(f"  ⚠️ Extended hours error for {symbol}: {e}")
-    return result
-
 def collect_data():
     print("📡 Fetching live market data...")
     data = {"stocks": {}, "crypto": {}}
@@ -137,8 +146,8 @@ def collect_data():
         print(f"  {sym}...")
         q    = fetch_quote(sym)
         news = fetch_news(sym, 4)
-        ext  = fetch_extended_hours(sym)
-        data["stocks"][sym] = {"quote": q, "news": news, "extended": ext}
+        # pre/post market now included in quote
+        data["stocks"][sym] = {"quote": q, "news": news}
         time.sleep(1.2)
 
     for c in PORTFOLIO["crypto"]:
@@ -316,43 +325,37 @@ def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", ti
         news= data["stocks"][sym].get("news", [])
         ext = data["stocks"][sym].get("extended", {})
 
-        # Extended hours data
-        pre_p  = ext.get("pre_price")
-        pre_c  = ext.get("pre_change_pct")   # already a fraction e.g. -0.02
-        post_p = ext.get("post_price")
-        post_c = ext.get("post_change_pct")
-        close  = ext.get("regular_close") or q.get("price", 0)
+        # Extended hours — now in quote directly
+        post_p  = q.get("post_price")
+        post_c  = q.get("post_chg_pct")
+        pre_p   = q.get("pre_price")
+        pre_c   = q.get("pre_chg_pct")
 
-        # ── Build extended hours HTML badge ──────────────────
+        # ── Extended hours badges ─────────────────────────────
         ext_badge = ""
         if post_p and post_c is not None:
-            post_pct = post_c * 100 if abs(post_c) < 1 else post_c
-            psgn  = "▲" if post_pct >= 0 else "▼"
-            pcol  = "#276749" if post_pct >= 0 else "#c53030"
-            ext_badge += f'''<span class="stag" style="background:{pcol}18;color:{pcol};font-weight:700;border:1px solid {pcol}40">🌙 After-Hours: {fmt_price(post_p)} {psgn}{abs(post_pct):.2f}%</span>'''
+            psgn = "▲" if post_c >= 0 else "▼"
+            pcol = "#276749" if post_c >= 0 else "#c53030"
+            ext_badge += f'''<span class="stag" style="background:{pcol}18;color:{pcol};font-weight:700;border:1px solid {pcol}40">🌙 After-Hours: {fmt_price(post_p)} {psgn}{abs(post_c):.2f}%</span>'''
         if pre_p and pre_c is not None:
-            pre_pct  = pre_c * 100 if abs(pre_c) < 1 else pre_c
-            prsgn = "▲" if pre_pct >= 0 else "▼"
-            prcol = "#276749" if pre_pct >= 0 else "#c53030"
-            ext_badge += f'''<span class="stag" style="background:{prcol}18;color:{prcol};font-weight:700;border:1px solid {prcol}40">🌅 Pre-Market: {fmt_price(pre_p)} {prsgn}{abs(pre_pct):.2f}%</span>'''
+            prsgn = "▲" if pre_c >= 0 else "▼"
+            prcol = "#276749" if pre_c >= 0 else "#c53030"
+            ext_badge += f'''<span class="stag" style="background:{prcol}18;color:{prcol};font-weight:700;border:1px solid {prcol}40">🌅 Pre-Market: {fmt_price(pre_p)} {prsgn}{abs(pre_c):.2f}%</span>'''
 
-        # ── Build extended hours ANALYSIS text ───────────────
+        # ── Extended hours ANALYSIS text ──────────────────────
         ext_analysis = ""
         if post_p and post_c is not None:
-            post_pct2 = post_c * 100 if abs(post_c) < 1 else post_c
-            if abs(post_pct2) >= 1.0:
-                direction = "ارتفع" if post_pct2 > 0 else "انخفض"
-                strength  = "بشكل حاد" if abs(post_pct2) > 3 else "بشكل معتدل"
-                ext_analysis += f"{sym} {direction} {strength} في التداول الممتد بعد الإغلاق ({'+' if post_pct2>0 else ''}{post_pct2:.2f}%) وصل إلى {fmt_price(post_p)}. "
+            if abs(post_c) >= 1.0:
+                direction = "ارتفع" if post_c > 0 else "انخفض"
+                strength  = "بشكل حاد" if abs(post_c) > 3 else "بشكل معتدل"
+                ext_analysis += f"{sym} {direction} {strength} في التداول الممتد بعد الإغلاق ({'+' if post_c>0 else ''}{post_c:.2f}%) وصل إلى {fmt_price(post_p)}. "
             else:
-                ext_analysis += f"{sym} تداول ثابت نسبياً بعد الإغلاق ({'+' if post_pct2>0 else ''}{post_pct2:.2f}%). "
-
+                ext_analysis += f"{sym} تداول ثابت نسبياً بعد الإغلاق ({'+' if post_c>0 else ''}{post_c:.2f}%). "
         if pre_p and pre_c is not None:
-            pre_pct2 = pre_c * 100 if abs(pre_c) < 1 else pre_c
-            if abs(pre_pct2) >= 0.5:
-                direction2 = "يرتفع" if pre_pct2 > 0 else "ينخفض"
-                signal     = "إشارة إيجابية قبل الافتتاح" if pre_pct2 > 0 else "ضغط قبل الافتتاح"
-                ext_analysis += f"Pre-Market: {sym} {direction2} {abs(pre_pct2):.2f}% عند {fmt_price(pre_p)} — {signal}."
+            if abs(pre_c) >= 0.5:
+                direction2 = "يرتفع" if pre_c > 0 else "ينخفض"
+                signal     = "إشارة إيجابية قبل الافتتاح" if pre_c > 0 else "ضغط بيعي قبل الافتتاح"
+                ext_analysis += f"Pre-Market: {sym} {direction2} {abs(pre_c):.2f}% عند {fmt_price(pre_p)} — {signal}."
             else:
                 ext_analysis += f"Pre-Market: تداول هادئ عند {fmt_price(pre_p)}."
 
