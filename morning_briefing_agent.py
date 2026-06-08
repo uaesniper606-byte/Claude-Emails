@@ -10,6 +10,11 @@ Sends 3 PDFs:
 
 import os, base64, time, datetime, requests
 from playwright.sync_api import sync_playwright
+try:
+    import yfinance as yf
+    HAS_YF = True
+except ImportError:
+    HAS_YF = False
 
 # ── CONFIG ────────────────────────────────────────────────────
 AV_KEY      = os.environ.get("AV_KEY", "HONKZR3NHFIQ59P4")
@@ -101,6 +106,28 @@ def fmt_vol(v):
     if v >= 1_000: return f"{v/1_000:.0f}K"
     return str(v)
 
+
+def fetch_extended_hours(symbol: str) -> dict:
+    """Fetch pre-market and after-hours prices via yfinance."""
+    result = {
+        "pre_price": None, "pre_change_pct": None,
+        "post_price": None, "post_change_pct": None,
+        "regular_close": None
+    }
+    if not HAS_YF:
+        return result
+    try:
+        t    = yf.Ticker(symbol)
+        info = t.info
+        result["regular_close"]   = info.get("regularMarketPrice") or info.get("previousClose")
+        result["pre_price"]       = info.get("preMarketPrice")
+        result["pre_change_pct"]  = info.get("preMarketChangePercent")
+        result["post_price"]      = info.get("postMarketPrice")
+        result["post_change_pct"] = info.get("postMarketChangePercent")
+    except Exception as e:
+        print(f"  ⚠️ Extended hours error for {symbol}: {e}")
+    return result
+
 def collect_data():
     print("📡 Fetching live market data...")
     data = {"stocks": {}, "crypto": {}}
@@ -110,7 +137,8 @@ def collect_data():
         print(f"  {sym}...")
         q    = fetch_quote(sym)
         news = fetch_news(sym, 4)
-        data["stocks"][sym] = {"quote": q, "news": news}
+        ext  = fetch_extended_hours(sym)
+        data["stocks"][sym] = {"quote": q, "news": news, "extended": ext}
         time.sleep(1.2)
 
     for c in PORTFOLIO["crypto"]:
@@ -284,8 +312,25 @@ def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", ti
     stock_cards = ""
     for s in port["stocks"]:
         sym = s["sym"]
-        q = data["stocks"][sym].get("quote", {})
-        news = data["stocks"][sym].get("news", [])
+        q   = data["stocks"][sym].get("quote", {})
+        news= data["stocks"][sym].get("news", [])
+        ext = data["stocks"][sym].get("extended", {})
+
+        # Build extended hours HTML
+        ext_html_ar = ""
+        pre_p  = ext.get("pre_price")
+        pre_c  = ext.get("pre_change_pct")
+        post_p = ext.get("post_price")
+        post_c = ext.get("post_change_pct")
+        if pre_p and pre_c is not None:
+            pre_sign = "▲" if pre_c >= 0 else "▼"
+            pre_col  = "#276749" if pre_c >= 0 else "#c53030"
+            ext_html_ar += f'''<span class="stag" style="color:{pre_col};font-weight:700">Pre-Market: {fmt_price(pre_p)} {pre_sign}{abs(pre_c*100):.2f}%</span>'''
+        if post_p and post_c is not None:
+            post_sign = "▲" if post_c >= 0 else "▼"
+            post_col  = "#276749" if post_c >= 0 else "#c53030"
+            ext_html_ar += f'''<span class="stag" style="color:{post_col};font-weight:700">After-Hours: {fmt_price(post_p)} {post_sign}{abs(post_c*100):.2f}%</span>'''
+
         cur = q.get("price", s["buy"])
         chg_pct = float(q.get("chg_pct", 0))
         vol = fmt_vol(q.get("volume", 0))
