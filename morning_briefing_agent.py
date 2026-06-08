@@ -253,7 +253,7 @@ body{{background:#eef2f7;width:1240px}}
 # ════════════════════════════════════════════════════════════
 # PDF 1: ARABIC PORTFOLIO (محفظة سيف)
 # ════════════════════════════════════════════════════════════
-def build_portfolio_ar(data, date_str, am, amb, dv, dvb):
+def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", time_gst="10:30 GST", am="", amb="", dv="", dvb=""):
     css = build_css(am, amb, dv, dvb)
     port = PORTFOLIO
 
@@ -388,7 +388,7 @@ def build_portfolio_ar(data, date_str, am, amb, dv, dvb):
   </div>
   <div style="text-align:left">
     <div style="font-size:18px;font-weight:700;color:#fff">{date_str}</div>
-    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">2:30 ظهرًا · بتوقيت الخليج</div>
+    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">{time_gst} · {session} · بتوقيت الخليج</div>
   </div>
 </div>
 
@@ -520,7 +520,7 @@ def build_portfolio_ar(data, date_str, am, amb, dv, dvb):
 # ════════════════════════════════════════════════════════════
 # PDF 2 & 3: MARKET ANALYSIS (AR + EN)
 # ════════════════════════════════════════════════════════════
-def build_market_ar(data, date_str, am, amb, dv, dvb):
+def build_market_ar(data, date_str, session="الصباحي", icon="🌅", time_gst="10:30 GST", am="", amb="", dv="", dvb=""):
     css = build_css(am, amb, dv, dvb)
     return f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><style>{css}</style></head>
@@ -669,7 +669,7 @@ def build_market_ar(data, date_str, am, amb, dv, dvb):
 </div>
 </body></html>"""
 
-def build_market_en(data, date_str, am, amb, dv, dvb):
+def build_market_en(data, date_str, session_en="Morning", icon="🌅", time_gst="10:30 GST", am="", amb="", dv="", dvb=""):
     css = build_css(am, amb, dv, dvb)
     return f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><style>{css}</style></head>
@@ -683,7 +683,7 @@ def build_market_en(data, date_str, am, amb, dv, dvb):
   </div>
   <div style="text-align:right">
     <div style="font-size:18px;font-weight:700;color:#fff">{date_str}</div>
-    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">2:30 PM GST</div>
+    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">{time_gst} · {session_en}</div>
   </div>
 </div>
 
@@ -794,7 +794,7 @@ def build_pdf(html, out_path):
     kb = os.path.getsize(out_path) // 1024
     print(f"  ✅ {os.path.basename(out_path)} ({kb} KB)")
 
-def build_all_pdfs(data, date_str):
+def build_all_pdfs(data, date_str, session="الصباحي", session_en="Morning", icon="🌅", time_gst="10:30 GST"):
     print("\n🎨 Building PDFs...")
     am  = b64f(f"{FONT_DIR}/Amiri-Regular.ttf")
     amb = b64f(f"{FONT_DIR}/Amiri-Bold.ttf")
@@ -804,9 +804,9 @@ def build_all_pdfs(data, date_str):
     ds  = date_str.replace(",","").replace(" ","_")
     pdfs = {}
     configs = [
-        ("portfolio_ar",  build_portfolio_ar(data, date_str, am, amb, dv, dvb), f"{out}/1_portfolio_ar_{ds}.pdf"),
-        ("market_ar",     build_market_ar(data, date_str, am, amb, dv, dvb),    f"{out}/2_market_ar_{ds}.pdf"),
-        ("market_en",     build_market_en(data, date_str, am, amb, dv, dvb),    f"{out}/3_market_en_{ds}.pdf"),
+        ("portfolio_ar",  build_portfolio_ar(data, date_str, session, icon, time_gst, am, amb, dv, dvb), f"{out}/1_portfolio_ar_{ds}.pdf"),
+        ("market_ar",     build_market_ar(data, date_str, session, icon, time_gst, am, amb, dv, dvb),    f"{out}/2_market_ar_{ds}.pdf"),
+        ("market_en",     build_market_en(data, date_str, session_en, icon, time_gst, am, amb, dv, dvb), f"{out}/3_market_en_{ds}.pdf"),
     ]
     for key, html, path in configs:
         build_pdf(html, path)
@@ -849,7 +849,7 @@ def send_email(subject, body):
     else:
         print(f"  ⚠️ Email failed: {r.status_code}")
 
-def send_briefing(pdfs, data, date_str):
+def send_briefing(pdfs, data, date_str, session="الصباحي", session_en="Morning", icon="🌅", time_gst="10:30 GST", greeting="صباح الخير"):
     print("\n📧 Uploading and sending email...")
     time.sleep(2)
     urls = {}
@@ -883,9 +883,9 @@ def send_briefing(pdfs, data, date_str):
     t_pnl = t_val - t_cost
     t_pct = (t_pnl/t_cost)*100 if t_cost else 0
 
-    body = f"""صباح الخير سيف 🌅
+    body = f"""{greeting} سيف {icon}
 
-تقاريرك الصباحية جاهزة — {date_str}
+تقاريرك {session}ية جاهزة — {date_str}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📈 الأسهم:
@@ -916,19 +916,36 @@ def send_briefing(pdfs, data, date_str):
 🤖 Claude · Alpha Vantage MCP
 ⚠️ للأغراض المعلوماتية فقط · ليس نصيحة مالية
 """
-    send_email(f"📊 تقاريرك الصباحية | {date_str}", body)
+    send_email(f"📊 تقريرك {session} {icon} | {date_str} | {time_gst}", body)
 
 # ── MAIN ──────────────────────────────────────────────────────
 def run():
-    now       = datetime.datetime.now()
-    date_str  = now.strftime("%A, %B %d, %Y")
+    now      = datetime.datetime.utcnow()
+    gst_hour = (now.hour + 4) % 24
+    gst_min  = now.minute
+    time_gst = f"{gst_hour:02d}:{gst_min:02d} GST"
+
+    if gst_hour < 17:
+        session    = "الصباحي"
+        session_en = "Morning"
+        greeting   = "صباح الخير"
+        icon       = "🌅"
+    else:
+        session    = "المسائي"
+        session_en = "Evening"
+        greeting   = "مساء الخير"
+        icon       = "🌙"
+
+    date_str = now.strftime("%A, %B %d, %Y")
+
     print(f"\n{'='*50}")
-    print(f"  MORNING BRIEFING — {date_str}")
+    print(f"  {session_en.upper()} BRIEFING — {date_str} {time_gst}")
     print(f"{'='*50}")
+
     data = collect_data()
-    pdfs = build_all_pdfs(data, date_str)
-    send_briefing(pdfs, data, date_str)
-    print(f"\n✅ Done — {date_str}\n")
+    pdfs = build_all_pdfs(data, date_str, session, session_en, icon, time_gst)
+    send_briefing(pdfs, data, date_str, session, session_en, icon, time_gst, greeting)
+    print(f"\n✅ Done — {date_str} {time_gst}\n")
 
 if __name__ == "__main__":
     run()
