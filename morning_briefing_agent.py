@@ -1231,20 +1231,30 @@ def upload_pdf(local_path, gh_name):
     return ""
 
 def send_email(subject, body):
-    H = {"Authorization": f"token {GITHUB_PAT}",
-         "Accept": "application/vnd.github.v3+json",
-         "Content-Type": "application/json"}
-    payload = {"event_type": "send-email", "client_payload": {
-        "from": EMAIL_FROM, "to": EMAIL_TO,
-        "subject": subject, "text": body
-    }}
+    """Send email directly via Resend API — no dispatch needed."""
+    RESEND_KEY = os.environ.get("RESEND_KEY", "")
+    if not RESEND_KEY:
+        print("  ⚠️ RESEND_KEY not set")
+        return
     r = requests.post(
-        f"https://api.github.com/repos/{GITHUB_REPO}/dispatches",
-        headers=H, json=payload)
-    if r.status_code == 204:
-        print("  ✅ Email dispatched!")
+        "https://api.resend.com/emails",
+        headers={
+            "Authorization": f"Bearer {RESEND_KEY}",
+            "Content-Type": "application/json"
+        },
+        json={
+            "from":    EMAIL_FROM,
+            "to":      [EMAIL_TO],
+            "subject": subject,
+            "text":    body
+        },
+        timeout=30
+    )
+    if r.status_code in (200, 201):
+        email_id = r.json().get("id", "?")
+        print(f"  ✅ Email sent via Resend! ID: {email_id}")
     else:
-        print(f"  ⚠️ Email failed: {r.status_code}")
+        print(f"  ⚠️ Resend failed: {r.status_code} — {r.text[:100]}")
 
 def send_briefing(pdfs, data, date_str, session="الصباحي", session_en="Morning", icon="🌅", time_gst="10:30 GST", greeting="صباح الخير"):
     print("\n📧 Uploading and sending email...")
