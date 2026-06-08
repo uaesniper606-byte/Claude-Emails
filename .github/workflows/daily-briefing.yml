@@ -10,6 +10,10 @@ jobs:
   briefing:
     runs-on: ubuntu-latest
     timeout-minutes: 20
+
+    strategy:
+      fail-fast: false
+
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -28,12 +32,30 @@ jobs:
       - name: Verify fonts
         run: ls -lh fonts/
 
-      - name: Run agent
+      - name: Run agent (attempt 1)
+        id: attempt1
         env:
           AV_KEY: ${{ secrets.AV_KEY }}
           BRIEFING_PAT: ${{ secrets.BRIEFING_PAT }}
           RESEND_KEY: ${{ secrets.RESEND_KEY }}
         run: python morning_briefing_agent.py
+        continue-on-error: true
+
+      - name: Wait before retry
+        if: steps.attempt1.outcome == 'failure'
+        run: |
+          echo "⚠️ Attempt 1 failed — waiting 60 seconds before retry..."
+          sleep 60
+
+      - name: Run agent (attempt 2 - retry)
+        if: steps.attempt1.outcome == 'failure'
+        env:
+          AV_KEY: ${{ secrets.AV_KEY }}
+          BRIEFING_PAT: ${{ secrets.BRIEFING_PAT }}
+          RESEND_KEY: ${{ secrets.RESEND_KEY }}
+        run: |
+          echo "🔄 Retrying..."
+          python morning_briefing_agent.py
 
       - name: Save PDF artifact
         uses: actions/upload-artifact@v4
@@ -42,3 +64,20 @@ jobs:
           name: briefing-${{ github.run_id }}
           path: "*.pdf"
           retention-days: 30
+
+      - name: Notify on failure
+        if: failure()
+        env:
+          BRIEFING_PAT: ${{ secrets.BRIEFING_PAT }}
+        run: |
+          echo "❌ Both attempts failed — sending failure alert email..."
+          curl -s -X POST             -H "Authorization: token $BRIEFING_PAT"             -H "Accept: application/vnd.github.v3+json"             -H "Content-Type: application/json"             "https://api.github.com/repos/uaesniper606-byte/Claude-Emails/dispatches"             -d '{
+              "event_type": "send-email",
+              "client_payload": {
+                "from": "onboarding@resend.dev",
+                "to": "uae.sniper606@gmail.com",
+                "subject": "⚠️ تعذّر إرسال تقرير المحفظة اليوم",
+                "text": "حدث خطأ أثناء إنشاء تقريرك اليومي. سيعيد النظام المحاولة في الإرسال القادم. يمكنك فتح Claude وطلب التقرير يدوياً."
+              }
+            }'
+          echo "Alert sent."
