@@ -316,20 +316,46 @@ def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", ti
         news= data["stocks"][sym].get("news", [])
         ext = data["stocks"][sym].get("extended", {})
 
-        # Build extended hours HTML
-        ext_html_ar = ""
+        # Extended hours data
         pre_p  = ext.get("pre_price")
-        pre_c  = ext.get("pre_change_pct")
+        pre_c  = ext.get("pre_change_pct")   # already a fraction e.g. -0.02
         post_p = ext.get("post_price")
         post_c = ext.get("post_change_pct")
-        if pre_p and pre_c is not None:
-            pre_sign = "▲" if pre_c >= 0 else "▼"
-            pre_col  = "#276749" if pre_c >= 0 else "#c53030"
-            ext_html_ar += f'''<span class="stag" style="color:{pre_col};font-weight:700">Pre-Market: {fmt_price(pre_p)} {pre_sign}{abs(pre_c*100):.2f}%</span>'''
+        close  = ext.get("regular_close") or q.get("price", 0)
+
+        # ── Build extended hours HTML badge ──────────────────
+        ext_badge = ""
         if post_p and post_c is not None:
-            post_sign = "▲" if post_c >= 0 else "▼"
-            post_col  = "#276749" if post_c >= 0 else "#c53030"
-            ext_html_ar += f'''<span class="stag" style="color:{post_col};font-weight:700">After-Hours: {fmt_price(post_p)} {post_sign}{abs(post_c*100):.2f}%</span>'''
+            post_pct = post_c * 100 if abs(post_c) < 1 else post_c
+            psgn  = "▲" if post_pct >= 0 else "▼"
+            pcol  = "#276749" if post_pct >= 0 else "#c53030"
+            ext_badge += f'''<span class="stag" style="background:{pcol}18;color:{pcol};font-weight:700;border:1px solid {pcol}40">🌙 After-Hours: {fmt_price(post_p)} {psgn}{abs(post_pct):.2f}%</span>'''
+        if pre_p and pre_c is not None:
+            pre_pct  = pre_c * 100 if abs(pre_c) < 1 else pre_c
+            prsgn = "▲" if pre_pct >= 0 else "▼"
+            prcol = "#276749" if pre_pct >= 0 else "#c53030"
+            ext_badge += f'''<span class="stag" style="background:{prcol}18;color:{prcol};font-weight:700;border:1px solid {prcol}40">🌅 Pre-Market: {fmt_price(pre_p)} {prsgn}{abs(pre_pct):.2f}%</span>'''
+
+        # ── Build extended hours ANALYSIS text ───────────────
+        ext_analysis = ""
+        if post_p and post_c is not None:
+            post_pct2 = post_c * 100 if abs(post_c) < 1 else post_c
+            if abs(post_pct2) >= 1.0:
+                direction = "ارتفع" if post_pct2 > 0 else "انخفض"
+                strength  = "بشكل حاد" if abs(post_pct2) > 3 else "بشكل معتدل"
+                ext_analysis += f"{sym} {direction} {strength} في التداول الممتد بعد الإغلاق ({'+' if post_pct2>0 else ''}{post_pct2:.2f}%) وصل إلى {fmt_price(post_p)}. "
+            else:
+                ext_analysis += f"{sym} تداول ثابت نسبياً بعد الإغلاق ({'+' if post_pct2>0 else ''}{post_pct2:.2f}%). "
+
+        if pre_p and pre_c is not None:
+            pre_pct2 = pre_c * 100 if abs(pre_c) < 1 else pre_c
+            if abs(pre_pct2) >= 0.5:
+                direction2 = "يرتفع" if pre_pct2 > 0 else "ينخفض"
+                signal     = "إشارة إيجابية قبل الافتتاح" if pre_pct2 > 0 else "ضغط قبل الافتتاح"
+                ext_analysis += f"Pre-Market: {sym} {direction2} {abs(pre_pct2):.2f}% عند {fmt_price(pre_p)} — {signal}."
+            else:
+                ext_analysis += f"Pre-Market: تداول هادئ عند {fmt_price(pre_p)}."
+
 
         cur = q.get("price", s["buy"])
         chg_pct = float(q.get("chg_pct", 0))
@@ -361,6 +387,8 @@ def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", ti
     <span class="stag-e">⚠ الأرباح: {s['earn']}</span>
     <span class="{'stag-buy' if pnl>=0 else 'stag-loss'}">{arrow(pnl_p)} {abs(pnl_p):.1f}%</span>
   </div>
+  {f'<div style="padding:6px 15px;background:#f0f9ff;border-bottom:1px solid #e0f0ff;display:flex;gap:8px;flex-wrap:wrap;flex-direction:row-reverse">' + ext_badge + '</div>' if ext_badge else ""}
+  {f'<div style="padding:7px 15px;background:#fffdf0;border-bottom:1px solid #fef3c7;font-size:11px;color:#374151;text-align:right;line-height:1.6">' + ext_analysis + '</div>' if ext_analysis else ""}
   <div class="scard-news"><ul class="ar">{news_html if news_html else '<li>لا أخبار متاحة حالياً</li>'}</ul></div>
   <div class="pnl-box" style="flex-direction:row-reverse">
     <div class="tot-item">
