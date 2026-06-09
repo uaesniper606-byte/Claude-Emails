@@ -2,8 +2,8 @@ name: Daily Briefing
 
 on:
   schedule:
-    - cron: "30 10 * * 1-5"
-    - cron: "0 17 * * 1-5"
+    - cron: "37 10 * * 1-5"
+    - cron: "07 17 * * 1-5"
   workflow_dispatch:
 
 jobs:
