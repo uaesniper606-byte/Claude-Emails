@@ -22,9 +22,9 @@ EMAIL_FROM  = "onboarding@resend.dev"
 # ── SAIF'S PORTFOLIO (fixed) ──────────────────────────────────
 PORTFOLIO = {
     "stocks": [
-        {"sym":"MU",   "name":"مايكرون تكنولوجي",    "name_en":"Micron Technology",    "qty":33,             "buy":1037.10, "color":"E53E3E", "earn":"24 يونيو 2026"},
-        {"sym":"NOW",  "name":"سيرفس ناو",            "name_en":"ServiceNow",           "qty":100,            "buy":135.60,  "color":"059669", "earn":"29 يوليو 2026"},
-        {"sym":"PLTR", "name":"بالانتير",             "name_en":"Palantir Technologies","qty":52,             "buy":162.50,  "color":"7C3AED", "earn":"10 أغسطس 2026"},
+        {"sym":"MU",   "name":"مايكرون تكنولوجي",    "name_en":"Micron Technology",    "qty":34,             "buy":1031.90, "color":"E53E3E", "earn":"24 يونيو 2026"},
+        {"sym":"NOW",  "name":"سيرفس ناو",            "name_en":"ServiceNow",           "qty":112,            "buy":133.01,  "color":"059669", "earn":"29 يوليو 2026"},
+        {"sym":"PLTR", "name":"بالانتير",             "name_en":"Palantir Technologies","qty":62,             "buy":157.58,  "color":"7C3AED", "earn":"10 أغسطس 2026"},
         {"sym":"CBRS", "name":"سيريبراس سيستمز",     "name_en":"Cerebras Systems",     "qty":33,             "buy":300.00,  "color":"D97706", "earn":"غير محدد"},
     ],
     "crypto": [
