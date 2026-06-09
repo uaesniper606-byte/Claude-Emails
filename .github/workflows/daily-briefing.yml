@@ -14,9 +14,10 @@ on:
   workflow_dispatch:
     inputs:
       force:
-        description: "Send even if this session was already sent today (bypass dedup)"
-        type: boolean
-        default: false
+        description: "Send even if this session was already sent today. Use the string true to bypass dedup."
+        required: false
+        type: string
+        default: "false"
 
 # Never run two briefing jobs at once — closes the race between staggered crons.
 concurrency:
