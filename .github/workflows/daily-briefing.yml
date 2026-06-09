@@ -1,4 +1,4 @@
-name: Daily Morning Briefing
+name: Daily Briefing
 
 on:
   schedule:
@@ -10,9 +10,6 @@ jobs:
   briefing:
     runs-on: ubuntu-latest
     timeout-minutes: 20
-
-    strategy:
-      fail-fast: false
 
     steps:
       - name: Checkout repo
@@ -44,18 +41,16 @@ jobs:
       - name: Wait before retry
         if: steps.attempt1.outcome == 'failure'
         run: |
-          echo "⚠️ Attempt 1 failed — waiting 60 seconds before retry..."
+          echo "Attempt 1 failed — waiting 60 seconds..."
           sleep 60
 
-      - name: Run agent (attempt 2 - retry)
+      - name: Run agent (attempt 2)
         if: steps.attempt1.outcome == 'failure'
         env:
           AV_KEY: ${{ secrets.AV_KEY }}
           BRIEFING_PAT: ${{ secrets.BRIEFING_PAT }}
           RESEND_KEY: ${{ secrets.RESEND_KEY }}
-        run: |
-          echo "🔄 Retrying..."
-          python morning_briefing_agent.py
+        run: python morning_briefing_agent.py
 
       - name: Save PDF artifact
         uses: actions/upload-artifact@v4
@@ -65,19 +60,18 @@ jobs:
           path: "*.pdf"
           retention-days: 30
 
-      - name: Notify on failure
+      - name: Alert on failure
         if: failure()
         env:
           BRIEFING_PAT: ${{ secrets.BRIEFING_PAT }}
+          RESEND_KEY: ${{ secrets.RESEND_KEY }}
         run: |
-          echo "❌ Both attempts failed — sending failure alert email..."
-          curl -s -X POST             -H "Authorization: token $BRIEFING_PAT"             -H "Accept: application/vnd.github.v3+json"             -H "Content-Type: application/json"             "https://api.github.com/repos/uaesniper606-byte/Claude-Emails/dispatches"             -d '{
-              "event_type": "send-email",
-              "client_payload": {
-                "from": "onboarding@resend.dev",
-                "to": "uae.sniper606@gmail.com",
-                "subject": "⚠️ تعذّر إرسال تقرير المحفظة اليوم",
-                "text": "حدث خطأ أثناء إنشاء تقريرك اليومي. سيعيد النظام المحاولة في الإرسال القادم. يمكنك فتح Claude وطلب التقرير يدوياً."
-              }
-            }'
-          echo "Alert sent."
+          python3 -c "
+import requests, os
+r = requests.post('https://api.resend.com/emails',
+  headers={'Authorization': 'Bearer ' + os.environ.get('RESEND_KEY',''), 'Content-Type': 'application/json'},
+  json={'from':'onboarding@resend.dev','to':['uae.sniper606@gmail.com'],
+        'subject':'⚠️ تعذّر إرسال تقرير المحفظة اليوم',
+        'text':'حدث خطأ في إنشاء تقريرك اليومي. سيعيد النظام المحاولة في الإرسال القادم.'})
+print(f'Alert: {r.status_code}')
+"
