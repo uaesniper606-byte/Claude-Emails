@@ -1234,8 +1234,7 @@ def send_email(subject, body):
     """Send email directly via Resend API — no dispatch needed."""
     RESEND_KEY = os.environ.get("RESEND_KEY", "")
     if not RESEND_KEY:
-        print("  ⚠️ RESEND_KEY not set")
-        return
+        raise RuntimeError("RESEND_KEY secret not set - cannot send email")
     r = requests.post(
         "https://api.resend.com/emails",
         headers={
@@ -1254,7 +1253,8 @@ def send_email(subject, body):
         email_id = r.json().get("id", "?")
         print(f"  ✅ Email sent via Resend! ID: {email_id}")
     else:
-        print(f"  ⚠️ Resend failed: {r.status_code} — {r.text[:100]}")
+        print(f"Resend send FAILED: HTTP {r.status_code} - {r.text[:300]}")
+        raise RuntimeError(f"Resend send failed: HTTP {r.status_code} - {r.text[:300]}")
 
 def send_briefing(pdfs, data, date_str, session="الصباحي", session_en="Morning", icon="🌅", time_gst="10:30 GST", greeting="صباح الخير"):
     print("\n📧 Uploading and sending email...")
