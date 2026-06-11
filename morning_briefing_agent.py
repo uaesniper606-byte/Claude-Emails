@@ -785,6 +785,21 @@ def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", ti
     css = build_css(am, amb, dv, dvb)
     port = PORTFOLIO
     win_la = data.get("window", {}).get("la", "")
+    def _rec_card_ar(item, kind):
+        sym=item["sym"]; d=data[kind].get(sym,{}); rec=d.get("rec",{}); win=d.get("win",{}) or {}
+        price=d.get("price") if kind=="stocks" else d.get("price",{}).get("price",item["buy"])
+        wpct=win.get("chg_pct",0); css=rec.get("css","hl")
+        bg={"pos":"#f0fff4","neg":"#fff5f5","warn":"#fffdf0","hl":"#eef5ff"}.get(css,"#eef5ff")
+        bd={"pos":"#86efac","neg":"#fca5a5","warn":"#fbd38d","hl":"#bcd4f6"}.get(css,"#bcd4f6")
+        ac={"pos":"#166534","neg":"#991b1b","warn":"#92400e","hl":"#1e40af"}.get(css,"#1e40af")
+        return (f'<div style="background:{bg};border:1.5px solid {bd};border-radius:11px;padding:12px 14px;text-align:right">'
+                f'<div style="font-weight:700;color:{ac};font-size:13px;margin-bottom:5px">{sym} — {rec.get("action_ar","احتفظ")}</div>'
+                f'<div style="font-size:11px;color:#2d3748;line-height:1.8">السعر <span style="font-family:DV">{fmt_price(price,sym)}</span> · تغيّر الفترة <span style="font-family:DV">{wpct:+.2f}%</span><br>'
+                f'<strong>الدخول:</strong> <span style="font-family:DV">{fmt_price(rec.get("entry_lo",0),sym)}–{fmt_price(rec.get("entry_hi",0),sym)}</span> · '
+                f'<strong>الهدف:</strong> <span style="font-family:DV;color:#276749">{fmt_price(rec.get("target",0),sym)}</span> · '
+                f'<strong>الوقف:</strong> <span style="font-family:DV;color:#c53030">{fmt_price(rec.get("stop",0),sym)}</span><br>'
+                f'<strong>السبب:</strong> {rec.get("reason_ar","")}</div></div>')
+    recs_html='<div class="g2">'+"".join(_rec_card_ar(s,"stocks") for s in PORTFOLIO["stocks"])+"".join(_rec_card_ar(c,"crypto") for c in PORTFOLIO["crypto"])+'</div>'
 
     # Calculate totals
     s_cost = s_val = 0
@@ -980,6 +995,9 @@ def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", ti
     <div class="tot-lbl">النسبة الإجمالية</div>
   </div>
 </div>
+
+<div class="sec sec-ar"><div class="dot"></div>🎯 توصياتي وأسبابها — قرارات هذه الفترة</div>
+{recs_html}
 
 <div class="sec sec-ar"><div class="dot"></div>📈 الأسهم — الأداء والأخبار والربح/الخسارة</div>
 <div class="g2">{stock_cards}</div>
