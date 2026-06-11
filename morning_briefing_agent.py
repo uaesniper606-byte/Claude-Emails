@@ -25,19 +25,482 @@ PORTFOLIO = {
         {"sym":"MU",   "name":"مايكرون تكنولوجي",    "name_en":"Micron Technology",    "qty":34,             "buy":1031.90, "color":"E53E3E", "earn":"24 يونيو 2026"},
         {"sym":"NOW",  "name":"سيرفس ناو",            "name_en":"ServiceNow",           "qty":112,            "buy":133.01,  "color":"059669", "earn":"29 يوليو 2026"},
         {"sym":"PLTR", "name":"بالانتير",             "name_en":"Palantir Technologies","qty":62,             "buy":157.58,  "color":"7C3AED", "earn":"10 أغسطس 2026"},
-        {"sym":"CBRS", "name":"سيريبراس سيستمز",     "name_en":"Cerebras Systems",     "qty":33,             "buy":300.00,  "color":"D97706", "earn":"غير محدد"},
     ],
     "crypto": [
         {"sym":"XRP",  "name":"ريبل",        "name_en":"Ripple",     "qty":1091.9141638,   "buy":0.94640265, "color":"0284C7", "cat":"مدفوعات"},
         {"sym":"SOL",  "name":"سولانا",      "name_en":"Solana",     "qty":18.67559317,    "buy":82.35,      "color":"9945FF", "cat":"بنية تحتية"},
         {"sym":"HBAR", "name":"هيدرا",       "name_en":"Hedera",     "qty":6888.17073321,  "buy":0.27098023, "color":"0D9488", "cat":"بنية تحتية"},
-        {"sym":"SHIB", "name":"شيبا إينو",   "name_en":"Shiba Inu",  "qty":9130010.54,     "buy":0.000055,   "color":"DC2626", "cat":"ميم"},
-        {"sym":"ADA",  "name":"كاردانو",     "name_en":"Cardano",    "qty":137.26467321,   "buy":1.78,       "color":"1D4ED8", "cat":"بنية تحتية"},
-        {"sym":"ARB",  "name":"أربيتروم",    "name_en":"Arbitrum",   "qty":221.88235265,   "buy":0.1049,     "color":"0EA5E9", "cat":"الطبقة 2"},
-        {"sym":"DOT",  "name":"بولكادوت",    "name_en":"Polkadot",   "qty":6.14489028,     "buy":46.30,      "color":"DB2777", "cat":"بنية تحتية"},
-        {"sym":"GALA", "name":"غالا غيمز",   "name_en":"Gala Games", "qty":1051.07179997,  "buy":0.379773,   "color":"D97706", "cat":"ألعاب"},
     ]
 }
+
+# ════════════════════════════════════════════════════════════
+# LIVE WINDOW ENGINE  — per-report time-window data + real signals
+# Makes the two reports genuinely different: each reads ONLY the
+# price action inside its own time window and computes signals live.
+# ════════════════════════════════════════════════════════════
+import datetime as _dt
+
+UTC = _dt.timezone.utc
+GST = _dt.timezone(_dt.timedelta(hours=4))
+
+# yfinance symbol map for crypto (intraday + indicators)
+CRYPTO_YF = {
+    "XRP":"XRP-USD","SOL":"SOL-USD","HBAR":"HBAR-USD","SHIB":"SHIB-USD",
+    "ADA":"ADA-USD","ARB":"ARB-USD","DOT":"DOT-USD","GALA":"GALA-USD",
+    "BTC":"BTC-USD","ETH":"ETH-USD","XLM":"XLM-USD",
+}
+
+def window_bounds(now_utc, session):
+    """Time window each report analyzes (GST = UTC+4):
+       Evening (run ~9 PM GST): 2:30 PM -> 9 PM GST  = today 10:30 -> now UTC
+       Morning (run ~2:30 PM GST): prev 9 PM -> 2:30 PM GST = prev 17:00 -> now UTC
+    """
+    d = now_utc.date()
+    if session == "evening":
+        start = _dt.datetime(d.year, d.month, d.day, 10, 30, tzinfo=UTC)
+        la = "الفترة المُحلَّلة: من 2:30 ظهرًا إلى 9 مساءً (جلسة اليوم الحية)"
+        le = "Window analyzed: 2:30 PM → 9:00 PM GST (today's live session)"
+    else:
+        prev = now_utc - _dt.timedelta(days=1)
+        start = _dt.datetime(prev.year, prev.month, prev.day, 17, 0, tzinfo=UTC)
+        la = "الفترة المُحلَّلة: من 9 مساء أمس ← بعد الإغلاق ← ما قبل الافتتاح (حتى 2:30 ظهرًا)"
+        le = "Window analyzed: 9 PM yesterday → after-hours → pre-market (until 2:30 PM GST)"
+    end = now_utc
+    if start >= end:
+        start = end - _dt.timedelta(hours=6)
+    return start, end, la, le
+
+def _to_utc(df):
+    try:
+        idx = df.index
+        df.index = idx.tz_localize("UTC") if idx.tz is None else idx.tz_convert("UTC")
+    except Exception:
+        pass
+    return df
+
+def fetch_window(symbol, start_utc, end_utc):
+    """5-min bars (incl pre/post) sliced to the report window only."""
+    out = {"ok":False,"open":None,"last":None,"high":None,"low":None,
+           "chg":0.0,"chg_pct":0.0,"vol":0,"bars":0}
+    try:
+        import yfinance as yf
+        df = yf.Ticker(symbol).history(period="5d", interval="5m", prepost=True)
+        if df is None or df.empty:
+            return out
+        df = _to_utc(df)
+        win = df[(df.index >= start_utc) & (df.index <= end_utc)]
+        if win.empty:
+            win = df.tail(72)               # safety: last ~6h
+        o = float(win["Open"].iloc[0]); l = float(win["Close"].iloc[-1])
+        out.update({"ok":True,"open":round(o,4),"last":round(l,4),
+                    "high":round(float(win["High"].max()),4),
+                    "low":round(float(win["Low"].min()),4),
+                    "chg":round(l-o,4),
+                    "chg_pct":round((l-o)/o*100,2) if o else 0.0,
+                    "vol":int(win["Volume"].sum()),"bars":int(len(win))})
+    except Exception as e:
+        print(f"  ⚠️ window {symbol}: {e}")
+    return out
+
+def fetch_indicators(symbol):
+    """Daily-bar technicals: RSI(14), SMA20/50, ATR(14), trend."""
+    out = {"rsi":None,"sma20":None,"sma50":None,"atr":None,"price":None,"trend":"neutral"}
+    try:
+        import yfinance as yf
+        df = yf.Ticker(symbol).history(period="6mo", interval="1d")
+        if df is None or len(df) < 30:
+            return out
+        c, h, lo = df["Close"], df["High"], df["Low"]
+        delta = c.diff()
+        up = delta.clip(lower=0).rolling(14).mean()
+        dn = (-delta.clip(upper=0)).rolling(14).mean()
+        rs = up / dn.replace(0, 1e-9)
+        rsi = 100 - 100/(1+rs)
+        prev_c = c.shift()
+        tr = (h-lo).combine((h-prev_c).abs(), max).combine((lo-prev_c).abs(), max)
+        atr = tr.rolling(14).mean()
+        price = float(c.iloc[-1])
+        sma20 = float(c.rolling(20).mean().iloc[-1])
+        sma50 = float(c.rolling(50).mean().iloc[-1])
+        out.update({"rsi":round(float(rsi.iloc[-1]),1),"sma20":round(sma20,4),
+                    "sma50":round(sma50,4),"atr":round(float(atr.iloc[-1]),4),
+                    "price":round(price,4)})
+        if price > sma20 > sma50:   out["trend"] = "up"
+        elif price < sma20 < sma50: out["trend"] = "down"
+    except Exception as e:
+        print(f"  ⚠️ indicators {symbol}: {e}")
+    return out
+
+def recommend(sym, entry, price, win, ind, lang="ar"):
+    """Real BUY/SELL/HOLD with entry/target/stop/reason from live numbers."""
+    rsi   = ind.get("rsi")
+    trend = ind.get("trend","neutral")
+    atr   = ind.get("atr") or (price*0.04 if price else 0)
+    sma50 = ind.get("sma50")
+    wpct  = (win or {}).get("chg_pct", 0)
+    pnl   = ((price-entry)/entry*100) if entry else 0
+
+    score = 0; drivers = []
+    if rsi is not None:
+        if rsi < 30:   score += 2; drivers.append(("RSI %.0f تشبّع بيعي"%rsi, "RSI %.0f oversold"%rsi))
+        elif rsi < 45: score += 1; drivers.append(("RSI %.0f منخفض"%rsi, "RSI %.0f soft"%rsi))
+        elif rsi > 70: score -= 2; drivers.append(("RSI %.0f تشبّع شرائي"%rsi, "RSI %.0f overbought"%rsi))
+        elif rsi > 58: score -= 1; drivers.append(("RSI %.0f مرتفع"%rsi, "RSI %.0f elevated"%rsi))
+    if trend == "up":   score += 1; drivers.append(("اتجاه صاعد فوق المتوسطات","uptrend above MAs"))
+    elif trend == "down": score -= 1; drivers.append(("اتجاه هابط تحت المتوسطات","downtrend below MAs"))
+    if wpct >= 1.5:   score += 1; drivers.append(("زخم +%.1f%% في الفترة"%wpct, "+%.1f%% window momentum"%wpct))
+    elif wpct <= -1.5: score -= 1; drivers.append(("ضعف %.1f%% في الفترة"%wpct, "%.1f%% window weakness"%wpct))
+    if pnl <= -20: score += 1; drivers.append(("خصم %.0f%% عن دخولك"%pnl, "%.0f%% below your entry"%pnl))
+    if pnl >= 60:  score -= 1; drivers.append(("ربح +%.0f%% — جني محتمل"%pnl, "+%.0f%% gain — trim candidate"%pnl))
+
+    if   score >= 3: act_ar, act_en, css = "شراء قوي", "STRONG BUY", "pos"
+    elif score == 2: act_ar, act_en, css = "شراء / تراكم", "BUY / Accumulate", "pos"
+    elif score in (0,1): act_ar, act_en, css = "انتظار · احتفظ", "HOLD", "hl"
+    elif score == -1: act_ar, act_en, css = "تخفيف", "TRIM", "warn"
+    else: act_ar, act_en, css = "بيع · خروج", "REDUCE / SELL", "neg"
+
+    p = price or 0
+    if score >= 2:
+        e_lo, e_hi = p-0.4*atr, p
+        target = max((win or {}).get("high", p) or p, p+2.2*atr)
+        stop   = min(sma50 if sma50 else p-1.6*atr, p-1.6*atr)
+    elif score <= -1:
+        e_lo, e_hi = p, p+0.4*atr
+        target = p+1.4*atr; stop = p-1.4*atr
+    else:
+        e_lo, e_hi = p-0.5*atr, p+0.2*atr
+        target = p+1.8*atr; stop = p-1.5*atr
+
+    dr_ar = "، ".join(d[0] for d in drivers[:3]) or "إشارات محايدة"
+    dr_en = ", ".join(d[1] for d in drivers[:3]) or "neutral signals"
+    return {"action": act_ar if lang=="ar" else act_en,
+            "action_ar":act_ar, "action_en":act_en, "css":css, "score":score,
+            "entry_lo":round(e_lo,6),"entry_hi":round(e_hi,6),
+            "target":round(target,6),"stop":round(max(stop,0),6),
+            "reason": dr_ar if lang=="ar" else dr_en,
+            "reason_ar":dr_ar,"reason_en":dr_en}
+
+def fetch_market_snapshot(start_utc, end_utc):
+    """Live index/commodity snapshot with WINDOW-specific change."""
+    syms = {"sp":"^GSPC","ndx":"^IXIC","brent":"BZ=F","gold":"GC=F","btc":"BTC-USD"}
+    snap = {}
+    for k, s in syms.items():
+        w = fetch_window(s, start_utc, end_utc)
+        snap[k] = {"val": w.get("last"), "pct": w.get("chg_pct", 0), "ok": w.get("ok")}
+        time.sleep(0.2)
+    return snap
+
+def ai_narrate(prompt, max_tokens=900):
+    """Optional AI narrative. Provider via env AI_PROVIDER + AI_KEY.
+       Returns None on any failure -> caller uses the computational text."""
+    prov = os.environ.get("AI_PROVIDER","").lower().strip()
+    key  = os.environ.get("AI_KEY","").strip()
+    if not prov or not key:
+        return None
+    try:
+        if prov == "anthropic":
+            r = requests.post("https://api.anthropic.com/v1/messages",
+                headers={"x-api-key":key,"anthropic-version":"2023-06-01","content-type":"application/json"},
+                json={"model":os.environ.get("AI_MODEL","claude-3-5-haiku-20241022"),
+                      "max_tokens":max_tokens,"messages":[{"role":"user","content":prompt}]}, timeout=45)
+            if r.status_code==200: return r.json()["content"][0]["text"].strip()
+            print("  ⚠️ AI anthropic", r.status_code, r.text[:160])
+        elif prov == "gemini":
+            m = os.environ.get("AI_MODEL","gemini-1.5-flash")
+            r = requests.post(f"https://generativelanguage.googleapis.com/v1beta/models/{m}:generateContent?key={key}",
+                json={"contents":[{"parts":[{"text":prompt}]}]}, timeout=45)
+            if r.status_code==200: return r.json()["candidates"][0]["content"]["parts"][0]["text"].strip()
+            print("  ⚠️ AI gemini", r.status_code, r.text[:160])
+        elif prov == "openai":
+            r = requests.post("https://api.openai.com/v1/chat/completions",
+                headers={"Authorization":f"Bearer {key}","Content-Type":"application/json"},
+                json={"model":os.environ.get("AI_MODEL","gpt-4o-mini"),
+                      "max_tokens":max_tokens,"messages":[{"role":"user","content":prompt}]}, timeout=45)
+            if r.status_code==200: return r.json()["choices"][0]["message"]["content"].strip()
+            print("  ⚠️ AI openai", r.status_code, r.text[:160])
+    except Exception as e:
+        print("  ⚠️ AI error", e)
+    return None
+
+# ── LIVE MARKET HTML HELPERS ──────────────────────────────────
+def _idx_cell(val, pct, label, fmt="{:,.0f}"):
+    if val is None:
+        vtxt = "N/A"; col = "#718096"; bg = "#f1f5f9"
+    else:
+        vtxt = fmt.format(val)
+        col = "#c53030" if pct < 0 else "#276749"
+        bg = "linear-gradient(135deg,#fff5f5,#ffe8e8)" if pct < 0 else "linear-gradient(135deg,#f0fff4,#e6ffed)"
+    sgn = "▼" if pct < 0 else "▲"
+    return (f'<div class="sc" style="background:{bg}">'
+            f'<div class="sv" style="color:{col};font-family:DV">{vtxt}</div>'
+            f'<div class="sl">{label} ({sgn}{abs(pct):.2f}%)</div></div>')
+
+def live_strip_html(snap):
+    snap = snap or {}
+    g = lambda k: snap.get(k, {"val": None, "pct": 0})
+    sp, ndx, br, gd, bt = g("sp"), g("ndx"), g("brent"), g("gold"), g("btc")
+    return ('<div class="strip">'
+            + _idx_cell(sp["val"], sp["pct"], "S&P 500")
+            + _idx_cell(ndx["val"], ndx["pct"], "Nasdaq")
+            + _idx_cell(br["val"], br["pct"], "Brent/bbl", "${:,.1f}")
+            + _idx_cell(gd["val"], gd["pct"], "Gold/oz", "${:,.0f}")
+            + _idx_cell(bt["val"], bt["pct"], "BTC", "${:,.0f}")
+            + '</div>')
+
+def dynamic_headline(snap, lang="ar"):
+    ndx = (snap or {}).get("ndx", {"pct": 0})
+    p = ndx.get("pct", 0)
+    if p <= -1.5:
+        return ("🔴", "a-r",
+                ("موجة بيع في الفترة" if lang=="ar" else "Risk-off this window"),
+                (f"ناسداك {p:.2f}% خلال الفترة — ضغط هبوطي واضح على التقنية. تحوّط ومتابعة المستويات."
+                 if lang=="ar" else
+                 f"Nasdaq {p:.2f}% this window — clear tech pressure. Risk-managed, watch levels."))
+    if p >= 1.5:
+        return ("🟢", "a-b",
+                ("زخم صاعد في الفترة" if lang=="ar" else "Risk-on this window"),
+                (f"ناسداك +{p:.2f}% خلال الفترة — شهية مخاطرة إيجابية تدعم الأصول النامية."
+                 if lang=="ar" else
+                 f"Nasdaq +{p:.2f}% this window — positive risk appetite supports growth assets."))
+    return ("🟡", "a-a",
+            ("تداول متباين في الفترة" if lang=="ar" else "Mixed / range-bound window"),
+            (f"ناسداك {p:+.2f}% خلال الفترة — حركة محدودة. انتظار محفزات أوضح."
+             if lang=="ar" else
+             f"Nasdaq {p:+.2f}% this window — limited move. Awaiting clearer catalysts."))
+
+def opp_levels(w):
+    """Compute live entry/target/stop for a watch asset from its window bars."""
+    p = (w or {}).get("last")
+    if not p:
+        return None
+    hi = (w or {}).get("high") or p
+    lo = (w or {}).get("low") or p
+    rng = max(hi - lo, p * 0.03)
+    return {"price": p,
+            "entry_lo": round(p - 0.4 * rng, 4), "entry_hi": round(p, 4),
+            "target": round(max(hi, p + 1.6 * rng), 4),
+            "stop": round(max(lo - 0.3 * rng, p * 0.90), 4),
+            "pct": (w or {}).get("chg_pct", 0)}
+
+def opp_blocks_html(data, lang="ar"):
+    names = {
+        "BTC-USD": ("بيتكوين (BTC)", "Bitcoin (BTC)"),
+        "COIN":    ("كوينبيس (COIN)", "Coinbase (COIN)"),
+        "AMD":     ("AMD — رقائق", "AMD — chips"),
+        "XLM-USD": ("ستيلر (XLM)", "Stellar (XLM)"),
+        "ETH-USD": ("إيثيريوم (ETH)", "Ethereum (ETH)"),
+    }
+    ow = data.get("opp_win", {})
+    out = ""
+    for sym, (nar, nen) in names.items():
+        lv = opp_levels(ow.get(sym))
+        if not lv:
+            continue
+        nm = nar if lang == "ar" else nen
+        pct = lv["pct"]; pcol = "#c53030" if pct < 0 else "#276749"
+        psgn = "▼" if pct < 0 else "▲"
+        align = "right" if lang == "ar" else "left"
+        if lang == "ar":
+            body = (f'السعر الحالي <span style="font-family:DV">{fmt_price(lv["price"],sym)}</span> '
+                    f'(<span style="color:{pcol}">{psgn}{abs(pct):.2f}%</span> خلال الفترة).<br>'
+                    f'<strong>نطاق الدخول:</strong> <span style="font-family:DV">{fmt_price(lv["entry_lo"],sym)}–{fmt_price(lv["entry_hi"],sym)}</span> · '
+                    f'<strong>الهدف:</strong> <span style="font-family:DV;color:#276749">{fmt_price(lv["target"],sym)}</span> · '
+                    f'<strong>وقف الخسارة:</strong> <span style="font-family:DV;color:#c53030">{fmt_price(lv["stop"],sym)}</span>')
+        else:
+            body = (f'Live price <span style="font-family:DV">{fmt_price(lv["price"],sym)}</span> '
+                    f'(<span style="color:{pcol}">{psgn}{abs(pct):.2f}%</span> this window).<br>'
+                    f'<strong>Entry:</strong> <span style="font-family:DV">{fmt_price(lv["entry_lo"],sym)}–{fmt_price(lv["entry_hi"],sym)}</span> · '
+                    f'<strong>Target:</strong> <span style="font-family:DV;color:#276749">{fmt_price(lv["target"],sym)}</span> · '
+                    f'<strong>Stop:</strong> <span style="font-family:DV;color:#c53030">{fmt_price(lv["stop"],sym)}</span>')
+        out += (f'<div class="opp"><div class="opp-t" style="text-align:{align}">🎯 {nm}</div>'
+                f'<p style="text-align:{align}">{body}</p></div>')
+    return out or '<div class="opp"><p>تعذّر جلب بيانات الفرص الآن.</p></div>'
+
+def portfolio_signal_table(data, lang="ar"):
+    """Computed scoreboard of holdings by window move + action."""
+    rows = []
+    for kind in ("stocks", "crypto"):
+        for item in PORTFOLIO[kind]:
+            sym = item["sym"]; d = data[kind].get(sym, {})
+            rec = d.get("rec", {}); win = d.get("win", {}) or {}
+            rows.append((sym, item["color"], win.get("chg_pct", 0),
+                         rec.get("action_ar" if lang == "ar" else "action_en", "—"),
+                         rec.get("css", "hl")))
+    rows.sort(key=lambda r: r[2], reverse=True)
+    th = (("الأصل","تغيّر الفترة","الإشارة") if lang=="ar"
+          else ("Asset","Window %","Signal"))
+    align = "right" if lang == "ar" else "left"
+    direction = "rtl" if lang == "ar" else "ltr"
+    body = ""
+    for sym, col, pct, act, css in rows:
+        pcol = "#c53030" if pct < 0 else "#276749"
+        sgn = "▼" if pct < 0 else "▲"
+        body += (f'<tr><td style="text-align:{align}"><strong style="color:#{col}">{sym}</strong></td>'
+                 f'<td style="font-family:DV;color:{pcol};text-align:{align}">{sgn}{abs(pct):.2f}%</td>'
+                 f'<td class="{css}" style="text-align:{align};font-weight:700">{act}</td></tr>')
+    return (f'<table class="tbl" style="direction:{direction}">'
+            f'<tr><th style="text-align:{align}">{th[0]}</th>'
+            f'<th style="text-align:{align}">{th[1]}</th>'
+            f'<th style="text-align:{align}">{th[2]}</th></tr>{body}</table>')
+
+def market_read(data, lang="ar"):
+    """AI narrative if AI_KEY set, else computed read from live signals."""
+    snap = data.get("snapshot", {})
+    win = data.get("window", {})
+    label = win.get("la" if lang == "ar" else "le", "")
+    # build compact facts
+    facts = []
+    for k, nm in [("sp","S&P500"),("ndx","Nasdaq"),("brent","Brent"),("gold","Gold"),("btc","BTC")]:
+        s = snap.get(k, {})
+        if s.get("val") is not None:
+            facts.append(f"{nm} {s.get('pct',0):+.2f}%")
+    movers = []
+    for kind in ("stocks", "crypto"):
+        for item in PORTFOLIO[kind]:
+            d = data[kind].get(item["sym"], {})
+            w = d.get("win", {}) or {}
+            movers.append((item["sym"], w.get("chg_pct", 0),
+                           d.get("rec", {}).get("action_ar" if lang=="ar" else "action_en","")))
+    movers.sort(key=lambda x: x[1])
+    worst = movers[:2]; best = movers[-2:][::-1]
+    facts_txt = " · ".join(facts)
+    prompt = (
+        ("اكتب فقرة موجزة (4-6 جمل) بالعربية كخبير أسواق، تحليل لحظي للفترة التالية فقط دون تكرار: "
+         if lang=="ar" else
+         "Write a concise 4-6 sentence market read in English as a markets expert, for THIS window only, no fluff: ")
+        + f"\nWindow: {label}\nIndices: {facts_txt}\n"
+        + "Top gainers: " + ", ".join(f"{s} {p:+.1f}%" for s,p,_ in best) + "\n"
+        + "Top losers: " + ", ".join(f"{s} {p:+.1f}%" for s,p,_ in worst) + "\n"
+        + ("اربط الحركة بالمخاطرة العامة وأعطِ خلاصة قابلة للتنفيذ." if lang=="ar"
+           else "Tie moves to risk sentiment and end with an actionable takeaway.")
+    )
+    ai = ai_narrate(prompt, max_tokens=500)
+    if ai:
+        return ai
+    # computed fallback
+    if lang == "ar":
+        bt = " · ".join(facts) or "بيانات محدودة"
+        bo = "، ".join(f"{s} ({p:+.1f}%)" for s,p,_ in best)
+        wo = "، ".join(f"{s} ({p:+.1f}%)" for s,p,_ in worst)
+        return (f"خلال هذه الفترة ({label}): المؤشرات — {bt}. "
+                f"الأفضل أداءً في محفظتك: {bo}؛ والأضعف: {wo}. "
+                f"التوصيات في الجداول أعلاه محسوبة لحظيًا من حركة كل أصل ومؤشراته الفنية داخل هذه الفترة تحديدًا — "
+                f"وهي تختلف عن تقرير الفترة الأخرى لأن البيانات تتغيّر بتغيّر السوق. "
+                f"التزم بمستويات الدخول/الهدف/الوقف ولا تطارد الحركة.")
+    bt = " · ".join(facts) or "limited data"
+    bo = ", ".join(f"{s} ({p:+.1f}%)" for s,p,_ in best)
+    wo = ", ".join(f"{s} ({p:+.1f}%)" for s,p,_ in worst)
+    return (f"This window ({label}): indices — {bt}. "
+            f"Portfolio leaders: {bo}; laggards: {wo}. "
+            f"The recommendation tables above are computed live from each asset's move and technicals within THIS window — "
+            f"they differ from the other report because the data changes with the market. "
+            f"Respect the entry/target/stop levels; don't chase.")
+
+def _market_ar_live(data, date_str, session, time_gst, css):
+    win_la = data.get("window", {}).get("la", "")
+    strip  = live_strip_html(data.get("snapshot", {}))
+    hicon, hcls, htitle, hbody = dynamic_headline(data.get("snapshot", {}), "ar")
+    signals = portfolio_signal_table(data, "ar")
+    read = market_read(data, "ar").replace("\n", "<br>")
+    opps = opp_blocks_html(data, "ar")
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>{css}</style></head>
+<body>
+<div class="page ar">
+<div class="hdr" style="flex-direction:row-reverse">
+  <div style="text-align:right">
+    <div class="hdr-badge">تحليل السوق اللحظي · {session}</div>
+    <div class="hdr-title">تحليل السوق العالمي والفرص</div>
+    <div class="hdr-sub">مؤشرات حية · إشارات المحفظة · قراءة السوق · الفرص</div>
+  </div>
+  <div style="text-align:left">
+    <div style="font-size:18px;font-weight:700;color:#fff">{date_str}</div>
+    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">{time_gst} · بتوقيت الخليج</div>
+    <div style="font-size:9.5px;color:rgba(255,255,255,.9);margin-top:5px;background:rgba(255,255,255,.14);border-radius:6px;padding:3px 9px;display:inline-block">🕐 {win_la}</div>
+  </div>
+</div>
+{strip}
+<div class="alert alert-ar {hcls}">
+  <div class="a-icon">{hicon}</div>
+  <div style="flex:1;text-align:right">
+    <div class="a-title">{htitle}</div>
+    <div class="a-body">{hbody}</div>
+  </div>
+</div>
+<div class="sec sec-ar"><div class="dot"></div>📊 إشارات محفظتك خلال الفترة (مرتّبة بالأداء)</div>
+{signals}
+<div class="sec sec-ar"><div class="dot"></div>🧠 قراءة السوق اللحظية</div>
+<div class="bline" style="text-align:right"><h3>⚡ خلاصة الفترة</h3><p>{read}</p></div>
+<div class="footer">تحليل السوق اللحظي · {date_str} · للأغراض المعلوماتية فقط · ليس نصيحة مالية</div>
+</div>
+
+<div class="page ar">
+<div style="background:linear-gradient(135deg,#0f2d5a,#1d4ed8);border-radius:12px;padding:18px 26px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center">
+  <div style="text-align:right">
+    <div style="font-size:10px;color:rgba(255,255,255,.65);margin-bottom:3px">تحليل السوق اللحظي · الفرص</div>
+    <div style="font-size:19px;font-weight:700;color:#fff">فرص الدخول — مستويات محسوبة لحظيًا</div>
+  </div>
+  <div style="font-size:10.5px;color:rgba(255,255,255,.75)">{date_str}</div>
+</div>
+<div class="sec sec-ar"><div class="dot"></div>🌟 فرص خارج محفظتك (أسعار ومستويات حية)</div>
+{opps}
+<div class="bline" style="text-align:right"><h3>⚡ تنبيه</h3><p>المستويات أعلاه محسوبة آليًا من حركة كل أصل داخل هذه الفترة فقط، وتتغيّر مع كل تقرير. ليست نصيحة مالية — أدِر المخاطر دائمًا.</p></div>
+<div class="footer">تحليل السوق اللحظي · الفرص · {date_str} · للأغراض المعلوماتية فقط · ليس نصيحة مالية</div>
+</div>
+</body></html>"""
+
+def _market_en_live(data, date_str, session_en, time_gst, css):
+    win_le = data.get("window", {}).get("le", "")
+    strip  = live_strip_html(data.get("snapshot", {}))
+    hicon, hcls, htitle, hbody = dynamic_headline(data.get("snapshot", {}), "en")
+    signals = portfolio_signal_table(data, "en")
+    read = market_read(data, "en").replace("\n", "<br>")
+    opps = opp_blocks_html(data, "en")
+    return f"""<!DOCTYPE html>
+<html><head><meta charset="UTF-8"><style>{css}</style></head>
+<body>
+<div class="page en">
+<div class="hdr">
+  <div>
+    <div class="hdr-badge">Live Market Analysis · {session_en}</div>
+    <div class="hdr-title">Global Market Intelligence & Opportunities</div>
+    <div class="hdr-sub">Live indices · Portfolio signals · Market read · Opportunities</div>
+  </div>
+  <div style="text-align:right">
+    <div style="font-size:18px;font-weight:700;color:#fff">{date_str}</div>
+    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">{time_gst} · {session_en}</div>
+    <div style="font-size:9.5px;color:rgba(255,255,255,.9);margin-top:5px;background:rgba(255,255,255,.14);border-radius:6px;padding:3px 9px;display:inline-block">🕐 {win_le}</div>
+  </div>
+</div>
+{strip}
+<div class="alert {hcls}">
+  <div class="a-icon">{hicon}</div>
+  <div style="flex:1">
+    <div class="a-title">{htitle}</div>
+    <div class="a-body">{hbody}</div>
+  </div>
+</div>
+<div class="sec"><div class="dot"></div>📊 Your Portfolio Signals This Window (ranked)</div>
+{signals}
+<div class="sec"><div class="dot"></div>🧠 Live Market Read</div>
+<div class="bline"><h3>⚡ Window Takeaway</h3><p>{read}</p></div>
+<div class="footer">Live Market Analysis · {date_str} · For informational purposes only · Not financial advice</div>
+</div>
+
+<div class="page en">
+<div style="background:linear-gradient(135deg,#0f2d5a,#1d4ed8);border-radius:12px;padding:18px 26px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center">
+  <div>
+    <div style="font-size:10px;color:rgba(255,255,255,.65);margin-bottom:3px">Live Market Analysis · Opportunities</div>
+    <div style="font-size:19px;font-weight:700;color:#fff">Entry Opportunities — Live Computed Levels</div>
+  </div>
+  <div style="font-size:10.5px;color:rgba(255,255,255,.75)">{date_str}</div>
+</div>
+<div class="sec"><div class="dot"></div>🌟 Opportunities Outside Your Portfolio (live prices & levels)</div>
+{opps}
+<div class="bline"><h3>⚡ Note</h3><p>Levels above are computed automatically from each asset's move within THIS window only and change every report. Not financial advice — always manage risk.</p></div>
+<div class="footer">Live Market Analysis · Opportunities · {date_str} · For informational purposes only · Not financial advice</div>
+</div>
+</body></html>"""
 
 # ── FONTS ─────────────────────────────────────────────────────
 FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fonts")
@@ -137,30 +600,55 @@ def fmt_vol(v):
     return str(v)
 
 
-def collect_data():
-    print("📡 Fetching live market data...")
-    data = {"stocks": {}, "crypto": {}}
+def collect_data(start_utc=None, end_utc=None, session="morning"):
+    """Collect LIVE, WINDOW-SPECIFIC data + technical signals + recommendations.
+    Each report passes its own [start_utc,end_utc] so the two reports differ."""
+    if end_utc is None:
+        end_utc = _dt.datetime.now(tz=UTC)
+    _s, _e, win_la, win_le = window_bounds(end_utc, session)
+    if start_utc is None:
+        start_utc = _s
+    print(f"📡 Fetching live data for window {start_utc:%m-%d %H:%M} → {end_utc:%m-%d %H:%M} UTC ...")
+    data = {"stocks": {}, "crypto": {}, "window": {"start": start_utc.isoformat(),
+            "end": end_utc.isoformat(), "session": session, "la": win_la, "le": win_le}}
 
     for s in PORTFOLIO["stocks"]:
         sym = s["sym"]
         print(f"  {sym}...")
         q    = fetch_quote(sym)
+        win  = fetch_window(sym, start_utc, end_utc)
+        ind  = fetch_indicators(sym)
         news = fetch_news(sym, 4)
-        # pre/post market now included in quote
-        data["stocks"][sym] = {"quote": q, "news": news}
-        time.sleep(1.2)
+        # current price preference: live window close > quote price > entry
+        price = win.get("last") or q.get("price") or s["buy"]
+        rec   = recommend(sym, s["buy"], price, win, ind)
+        data["stocks"][sym] = {"quote": q, "win": win, "ind": ind,
+                               "news": news, "price": price, "rec": rec}
+        time.sleep(1.0)
 
     for c in PORTFOLIO["crypto"]:
         sym = c["sym"]
         print(f"  {sym}...")
-        price = fetch_crypto(sym)
+        yfsym = CRYPTO_YF.get(sym, f"{sym}-USD")
+        win   = fetch_window(yfsym, start_utc, end_utc)
+        ind   = fetch_indicators(yfsym)
+        price = win.get("last")
+        if not price:                                  # fallback to Alpha Vantage
+            price = fetch_crypto(sym).get("price", c["buy"])
         news  = fetch_news(f"CRYPTO:{sym}", 3)
-        data["crypto"][sym] = {"price": price, "news": news}
-        time.sleep(1.2)
+        rec   = recommend(sym, c["buy"], price, win, ind)
+        data["crypto"][sym] = {"price": {"price": price}, "win": win, "ind": ind,
+                               "news": news, "rec": rec}
+        time.sleep(1.0)
 
-    # Fetch real-time prices for opportunity assets
+    # Live market index/commodity snapshot for THIS window
+    print("  Fetching live market snapshot...")
+    data["snapshot"] = fetch_market_snapshot(start_utc, end_utc)
+    # Real-time opportunity asset prices (+ window change)
     print("  Fetching opportunity asset prices...")
     data["opp_prices"] = fetch_opportunity_prices()
+    data["opp_win"] = {s: fetch_window(s, start_utc, end_utc)
+                       for s in ["BTC-USD","COIN","AMD","XLM-USD","ETH-USD"]}
     print("✅ Data collected.\n")
     return data
 
@@ -296,6 +784,7 @@ body{{background:#eef2f7;width:1240px}}
 def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", time_gst="10:30 GST", am="", amb="", dv="", dvb=""):
     css = build_css(am, amb, dv, dvb)
     port = PORTFOLIO
+    win_la = data.get("window", {}).get("la", "")
 
     # Calculate totals
     s_cost = s_val = 0
@@ -363,9 +852,10 @@ def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", ti
                 ext_analysis += f"Pre-Market: تداول هادئ عند {fmt_price(pre_p)}."
 
 
-        cur = q.get("price", s["buy"])
-        chg_pct = float(q.get("chg_pct", 0))
-        vol = fmt_vol(q.get("volume", 0))
+        _d = data["stocks"][sym]
+        cur = _d.get("price") or q.get("price", s["buy"])
+        chg_pct = (_d.get("win") or {}).get("chg_pct", float(q.get("chg_pct", 0)))
+        vol = fmt_vol((_d.get("win") or {}).get("vol") or q.get("volume", 0))
         cost  = s["qty"] * s["buy"]
         val   = s["qty"] * cur
         pnl   = val - cost
@@ -384,7 +874,7 @@ def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", ti
       </div>
       <div style="text-align:left">
         <div class="scard-price">{fmt_price(cur)}</div>
-        <div style="font-family:DV;font-size:11px;color:{chg_col}">{arrow(chg_pct)} {abs(chg_pct):.2f}% &nbsp;|&nbsp; حجم: {vol}</div>
+        <div style="font-family:DV;font-size:11px;color:{chg_col}">{arrow(chg_pct)} {abs(chg_pct):.2f}% خلال الفترة &nbsp;|&nbsp; حجم: {vol}</div>
       </div>
     </div>
   </div>
@@ -463,11 +953,12 @@ def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", ti
   <div style="text-align:right">
     <div class="hdr-badge">محفظة سيف الشخصية · الأسهم</div>
     <div class="hdr-title">محفظتي — الأسهم</div>
-    <div class="hdr-sub">MU · NOW · PLTR · CBRS</div>
+    <div class="hdr-sub">MU · NOW · PLTR</div>
   </div>
   <div style="text-align:left">
     <div style="font-size:18px;font-weight:700;color:#fff">{date_str}</div>
     <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">{time_gst} · {session} · بتوقيت الخليج</div>
+    <div style="font-size:9.5px;color:rgba(255,255,255,.9);margin-top:5px;background:rgba(255,255,255,.14);border-radius:6px;padding:3px 9px;display:inline-block">🕐 {win_la}</div>
   </div>
 </div>
 
@@ -502,7 +993,7 @@ def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", ti
   <div style="text-align:right">
     <div class="hdr-badge">محفظة سيف الشخصية · الكريبتو</div>
     <div class="hdr-title">محفظتي — الكريبتو</div>
-    <div class="hdr-sub">XRP · SOL · HBAR · SHIB · ADA · ARB · DOT · GALA</div>
+    <div class="hdr-sub">XRP · SOL · HBAR</div>
   </div>
   <div style="text-align:left">
     <div style="font-size:18px;font-weight:700;color:#fff">{date_str}</div>
@@ -552,67 +1043,32 @@ def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", ti
   </div>
 </div>
 
-<div class="sec sec-ar"><div class="dot"></div>⚡ خطة العمل — توصياتي المباشرة</div>
+<div class="sec sec-ar"><div class="dot"></div>⚡ خطة العمل — توصيات محسوبة لحظيًا ({win_la})</div>
 <table class="tbl" style="direction:rtl">
-<tr><th style="text-align:right">الأصل</th><th style="text-align:right">السعر</th><th style="text-align:right">ر/خ %</th><th style="text-align:right">التوصية</th></tr>"""
+<tr><th style="text-align:right">الأصل</th><th style="text-align:right">السعر</th><th style="text-align:right">تغيّر الفترة</th><th style="text-align:right">التوصية</th><th style="text-align:right">دخول</th><th style="text-align:right">هدف</th><th style="text-align:right">وقف</th><th style="text-align:right">السبب</th></tr>"""
 
-    # (توصية_فورية, تحليل_مفصل, محفز_رئيسي, css)
-    rich = {
-      "MU":  ("احتفظ · لا تضيف قبل 24 يونيو",
-              "MU وصل ATH $1,089 في 3 يونيو ثم انهار 20% في 4 أيام. دخولك $1,037 قريب من التعادل. الهبوط عدوى قطاعية من برودكوم وليس ضعفاً في MU. نفيديا أكدت MU موردًا رئيسيًا لـ HBM4 — الأطروحة سليمة.",
-              "أرباح 24 يونيو: توجيه HBM4/DRAM قوي → ارتداد 20%+ | ضعيف → اختبار $700.", "warn"),
-      "NOW": ("تراكم نحو $100-105 بثقة",
-              "NOW أفضل عائد/مخاطرة في محفظتك. دخولك $135.60 والآن $112 — خصم 17%. 43 محللاً: شراء قوي، هدف $141.86. AI Control Tower + Otto = تحول استراتيجي. الأساسيات لم تتغير.",
-              "CPI 10 يونيو بارد → أضف عند $100-105. أرباح 29 يوليو محفز إيجابي. هدف 12 شهر: $135-145.", "pos"),
-      "PLTR":("احتفظ · تراكم بثقة دون $120",
-              "PLTR -15% من قمتها لكن الأساسيات تتسارع: إيرادات +85% سنوياً، تجاري أمريكي +133%، توجيه $7.66B. Wedbush: أفضل فرصة AI دفاعي. شراكة Google Cloud توسّع التوزيع. دخولك $162.50.",
-              "أرباح 10 أغسطس = محفز. تراكم دون $120 يُحسّن المتوسط. هدف 12 شهر: $180-200.", "pos"),
-      "CBRS":("احتفظ · راقب Form 4 يومياً — خطر فوري",
-              "CBRS -6.7% من عدوى قطاعية خالصة. ARK اشترت 63K سهم. OpenAI + AWS عملاء أساسيون. دخولك $300 والآن $200 — خسارة 33%. الأطروحة سليمة لكن انتهاء الإغلاق يُهدد.",
-              "انتهاء lockup period = بيع مطلعين محتمل. تحقق SEC EDGAR يومياً. لا تضيف قبل مرور الإغلاق.", "neg"),
-      "XRP": ("احتفظ · أضف على كل ضعف بثقة",
-              "XRP أفضل مركز كريبتو في محفظتك — الوحيد في منطقة الربح (+16%). راكوتن اليابان 5M موقع، ETF $60.5M/أسبوع. CLARITY Act يُصنّفها commodity = رفع الضغط القانوني نهائياً.",
-              "CLARITY Act (يونيو-أغسطس): عند المرور +50%+ محتمل. أفضل دخول: $0.90-1.00. هدف 2 سنة: $3-5.", "pos"),
-      "SOL": ("احتفظ · انتظر BTC فوق $65K",
-              "SOL أساسيات استثنائية: $650B حجم عملات مستقرة/شهر. ETF $900M+ AUM. دخولك $82.35 — قريب التعادل. الضغط مرتبط بـ BTC وليس بـ SOL نفسها.",
-              "BTC فوق $65K → SOL ترتد بسرعة. هدف Q4 2026: $150-200. لا تضيف حتى BTC يستقر.", "hl"),
-      "HBAR":("احتفظ · ثقة عالية جداً — مركز 2 سنة",
-              "HBAR أكثر عملة إثارة في محفظتك مدى بعيد. تعالج أكثر معاملات من ETH+SOL مجتمعتَين. IBM وGoogle وBoeing عملاء. دخولك $0.271 والآن $0.087 — خسارة 68% لا تعكس القيمة الجوهرية.",
-              "CLARITY Act + ETF Canary Capital = ×3-5 محتملة في 12-24 شهر. هذا مركزك الأقوى مدى بعيد.", "pos"),
-      "SHIB":("احتفظ فقط · لا تضيف أبداً",
-              "دخولك $0.000055 والآن $0.000008 — خسارة 85%. تحتاج +688% لاسترداد رأس المال. لا استخدام حقيقي. الأمل الوحيد: دورة مضاربة عارمة مع BTC فوق $100K.",
-              "الإطار: Q4 2026 أو 2027 مع ذروة BTC. ركّز على XRP وHBAR — أطروحات أقوى.", "neg"),
-      "ADA": ("احتفظ · انتظر Mainnet Q4 2026",
-              "دخولك $1.78 في ذروة 2021 والآن $0.19 — خسارة 89%. Testnet يونيو → Mainnet Q4 = المحفز الوحيد الموثوق. CLARITY Act تصنيف إيجابي. التراكم المؤسسي مستمر.",
-              "Mainnet Q4 = إطلاق قيمة. هدف موسم الألتكوينز: $0.60-1.00. لا تضيف — انتظر تأكيد الإطلاق.", "hl"),
-      "ARB": ("احتفظ · آخر أولوية لكن في الربح",
-              "دخولك $0.1049 والآن $0.33 — أنت في ربح +214%! ARB بيتا مرتفع = تهبط أكثر في risk-off. ترقية ArbOS 51 تحسّن الرسوم. المنافسة من Base وOptimism تضغط.",
-              "BTC فوق $75K → ARB ترتفع بقوة. هدف: $0.80-1.20. لا تضيف — انتظر السوق.", "hl"),
-      "DOT": ("احتفظ بحياد · لا تضيف أبداً",
-              "دخولك $46.30 والآن $3.81 — خسارة 92%. الأصعب في المحفظة. نظام الباراشين لم يحقق التبني. ترقية JAM هي الأمل الوحيد لكنها لم تُطلق. CLARITY Act تأثير محدود.",
-              "الإطار الواقعي: 2028-2029 مع هالفينغ BTC. ركّز سيولتك على أصول أقوى.", "hl"),
-      "GALA":("احتفظ فقط · لا إضافات أبداً",
-              "دخولك $0.379 والآن $0.0085 — خسارة 98%. Web3 Gaming أبطأ بكثير من التوقعات. CLARITY Act لا أثر يُذكر. تحتاج دورة مضاربة كاملة + نجاح ألعاب Gala.",
-              "الإطار: 2027-2028 في أحسن الأحوال. ركّز على XRP وHBAR وSOL بدلاً من هذا.", "neg"),
-    }
-
+    def _rec_row_ar(item, kind):
+        sym = item["sym"]
+        d   = data[kind][sym]
+        rec = d.get("rec", {})
+        win = d.get("win", {}) or {}
+        price = d.get("price") if kind == "stocks" else d.get("price", {}).get("price", item["buy"])
+        wpct  = win.get("chg_pct", 0)
+        col, css = item["color"], rec.get("css", "hl")
+        wa  = "▲" if wpct >= 0 else "▼"
+        wc  = "#276749" if wpct >= 0 else "#c53030"
+        return (f'<tr><td><strong style="color:#{col}">{sym}</strong></td>'
+                f'<td style="font-family:DV;font-weight:700">{fmt_price(price, sym)}</td>'
+                f'<td style="font-family:DV;color:{wc}">{wa}{abs(wpct):.2f}%</td>'
+                f'<td class="{css}" style="font-weight:700">{rec.get("action_ar","احتفظ")}</td>'
+                f'<td style="font-family:DV;font-size:10px">{fmt_price(rec.get("entry_lo",0),sym)}<br>{fmt_price(rec.get("entry_hi",0),sym)}</td>'
+                f'<td style="font-family:DV;font-size:10.5px;color:#276749;font-weight:700">{fmt_price(rec.get("target",0),sym)}</td>'
+                f'<td style="font-family:DV;font-size:10.5px;color:#c53030;font-weight:700">{fmt_price(rec.get("stop",0),sym)}</td>'
+                f'<td style="font-size:9.5px;color:#4a5568;text-align:right;line-height:1.5">{rec.get("reason_ar","")}</td></tr>')
     for s in PORTFOLIO["stocks"]:
-        sym = s["sym"]
-        q = data["stocks"][sym].get("quote", {})
-        cur = q.get("price", s["buy"])
-        pnl_p = ((cur - s["buy"]) / s["buy"]) * 100
-        act, analysis, catalyst, css_cls = rich.get(sym, ("احتفظ","","","hl"))
-        col = s["color"]
-        html += f'<tr><td><strong style="color:#{col}">{sym}</strong></td><td style="font-family:DV;font-size:10px">{fmt_price(s["buy"])}</td><td style="font-family:DV;font-weight:700">{fmt_price(cur)}</td><td class="{css_cls}" style="font-family:DV;font-weight:700">{arrow(pnl_p)}{abs(pnl_p):.1f}%</td><td class="{css_cls}">{act}</td><td style="font-size:10px;color:#4a5568">{catalyst[:70]}</td></tr>'
-
+        html += _rec_row_ar(s, "stocks")
     for c in PORTFOLIO["crypto"]:
-        sym = c["sym"]
-        p = data["crypto"][sym].get("price", {})
-        cur = p.get("price", c["buy"])
-        pnl_p = ((cur - c["buy"]) / c["buy"]) * 100
-        act, analysis, catalyst, css_cls = rich.get(sym, ("احتفظ","","","hl"))
-        col = c["color"]
-        html += f'<tr><td><strong style="color:#{col}">{sym}</strong></td><td style="font-family:DV;font-size:10px">{fmt_price(c["buy"],sym)}</td><td style="font-family:DV;font-weight:700">{fmt_price(cur,sym)}</td><td class="{css_cls}" style="font-family:DV;font-weight:700">{arrow(pnl_p)}{abs(pnl_p):.1f}%</td><td class="{css_cls}">{act}</td><td style="font-size:10px;color:#4a5568">{catalyst[:70]}</td></tr>'
+        html += _rec_row_ar(c, "crypto")
 
     html += f"""
 </table>
@@ -628,6 +1084,7 @@ def build_portfolio_ar(data, date_str, session="الصباحي", icon="🌅", ti
 def build_portfolio_en(data, date_str, session_en="Morning", icon="🌅", time_gst="10:30 GST", am="", amb="", dv="", dvb=""):
     css = build_css(am, amb, dv, dvb)
     port = PORTFOLIO
+    win_le = data.get("window", {}).get("le", "")
 
     # Totals
     s_cost = s_val = 0
@@ -659,9 +1116,10 @@ def build_portfolio_en(data, date_str, session_en="Morning", icon="🌅", time_g
         q    = data["stocks"][sym].get("quote", {})
         news = data["stocks"][sym].get("news", [])
 
-        cur    = q.get("price", s["buy"])
-        chg_p  = float(q.get("chg_pct", 0))
-        vol    = fmt_vol(q.get("volume", 0))
+        _d     = data["stocks"][sym]
+        cur    = _d.get("price") or q.get("price", s["buy"])
+        chg_p  = (_d.get("win") or {}).get("chg_pct", float(q.get("chg_pct", 0)))
+        vol    = fmt_vol((_d.get("win") or {}).get("vol") or q.get("volume", 0))
         cost   = s["qty"] * s["buy"]
         val    = s["qty"] * cur
         pnl    = val - cost
@@ -717,7 +1175,7 @@ def build_portfolio_en(data, date_str, session_en="Morning", icon="🌅", time_g
       </div>
       <div style="text-align:right">
         <div class="scard-price">{fmt_price(cur)}</div>
-        <div style="font-family:DV;font-size:11px;color:{chg_col}">{arrow(chg_p)} {abs(chg_p):.2f}% &nbsp;|&nbsp; Vol: {vol}</div>
+        <div style="font-family:DV;font-size:11px;color:{chg_col}">{arrow(chg_p)} {abs(chg_p):.2f}% this window &nbsp;|&nbsp; Vol: {vol}</div>
       </div>
     </div>
   </div>
@@ -792,36 +1250,26 @@ def build_portfolio_en(data, date_str, session_en="Morning", icon="🌅", time_g
     s_pnl = s_val - s_cost
     c_pnl = c_val - c_cost
 
-    # Action table
-    actions_en = {
-        "MU":   ("HOLD · Do NOT add pre-Jun 24 earnings", "warn"),
-        "NOW":  ("ACCUMULATE toward $100-105",             "pos"),
-        "PLTR": ("HOLD · Accumulate below $120",           "pos"),
-        "CBRS": ("HOLD · Monitor Form 4 daily",            "neg"),
-        "XRP":  ("HOLD · Add small on weakness",           "pos"),
-        "SOL":  ("HOLD · Strong fundamentals",             "hl"),
-        "HBAR": ("HOLD · High conviction long-term",       "pos"),
-        "SHIB": ("HOLD ONLY · No additions",               "neg"),
-        "ADA":  ("HOLD · Wait Q4 mainnet",                 "hl"),
-        "ARB":  ("HOLD · Last priority",                   "hl"),
-        "DOT":  ("NEUTRAL HOLD",                           "hl"),
-        "GALA": ("HOLD ONLY · Monitor pipeline",           "neg"),
-    }
-    action_rows = ""
-    for s in port["stocks"]:
-        sym = s["sym"]
-        q2  = data["stocks"][sym].get("quote", {})
-        cur2= q2.get("price", s["buy"])
-        pp  = ((cur2 - s["buy"]) / s["buy"]) * 100
-        act, css = actions_en.get(sym, ("HOLD", "hl"))
-        action_rows += f'''<tr><td><strong style="color:#{s["color"]}">{sym}</strong></td><td style="font-family:DV">{fmt_price(cur2)}</td><td style="font-family:DV;color:{("#276749" if pp>=0 else "#c53030")}">{arrow(pp)}{abs(pp):.1f}%</td><td class="{css}">{act}</td></tr>'''
-    for c in port["crypto"]:
-        sym = c["sym"]
-        p2  = data["crypto"][sym].get("price", {})
-        cur2= p2.get("price", c["buy"])
-        pp  = ((cur2 - c["buy"]) / c["buy"]) * 100
-        act, css = actions_en.get(sym, ("HOLD", "hl"))
-        action_rows += f'''<tr><td><strong style="color:#{c["color"]}">{sym}</strong></td><td style="font-family:DV">{fmt_price(cur2, sym)}</td><td style="font-family:DV;color:{("#276749" if pp>=0 else "#c53030")}">{arrow(pp)}{abs(pp):.1f}%</td><td class="{css}">{act}</td></tr>'''
+    # Action table — computed live recommendations
+    def _rec_row_en(item, kind):
+        sym = item["sym"]
+        d   = data[kind][sym]
+        rec = d.get("rec", {})
+        win = d.get("win", {}) or {}
+        price = d.get("price") if kind == "stocks" else d.get("price", {}).get("price", item["buy"])
+        wpct  = win.get("chg_pct", 0)
+        col, css = item["color"], rec.get("css", "hl")
+        wc  = "#276749" if wpct >= 0 else "#c53030"
+        return (f'<tr><td><strong style="color:#{col}">{sym}</strong></td>'
+                f'<td style="font-family:DV;font-weight:700">{fmt_price(price, sym)}</td>'
+                f'<td style="font-family:DV;color:{wc}">{arrow(wpct)}{abs(wpct):.2f}%</td>'
+                f'<td class="{css}" style="font-weight:700">{rec.get("action_en","HOLD")}</td>'
+                f'<td style="font-family:DV;font-size:10px">{fmt_price(rec.get("entry_lo",0),sym)}–{fmt_price(rec.get("entry_hi",0),sym)}</td>'
+                f'<td style="font-family:DV;font-size:10.5px;color:#276749;font-weight:700">{fmt_price(rec.get("target",0),sym)}</td>'
+                f'<td style="font-family:DV;font-size:10.5px;color:#c53030;font-weight:700">{fmt_price(rec.get("stop",0),sym)}</td>'
+                f'<td style="font-size:9.5px;color:#4a5568;line-height:1.5">{rec.get("reason_en","")}</td></tr>')
+    action_rows = "".join(_rec_row_en(s, "stocks") for s in port["stocks"])
+    action_rows += "".join(_rec_row_en(c, "crypto") for c in port["crypto"])
 
     return f"""<!DOCTYPE html>
 <html><head><meta charset="UTF-8"><style>{css}</style></head>
@@ -832,11 +1280,12 @@ def build_portfolio_en(data, date_str, session_en="Morning", icon="🌅", time_g
   <div>
     <div class="hdr-badge">Saif's Portfolio · {session_en} {icon} · Stocks</div>
     <div class="hdr-title">My Portfolio — Stocks</div>
-    <div class="hdr-sub">MU · NOW · PLTR · CBRS</div>
+    <div class="hdr-sub">MU · NOW · PLTR</div>
   </div>
   <div style="text-align:right">
     <div style="font-size:18px;font-weight:700;color:#fff">{date_str}</div>
-    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">{time_gst}</div>
+    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">{time_gst} · {session_en}</div>
+    <div style="font-size:9.5px;color:rgba(255,255,255,.9);margin-top:5px;background:rgba(255,255,255,.14);border-radius:6px;padding:3px 9px;display:inline-block">🕐 {win_le}</div>
   </div>
 </div>
 
@@ -870,9 +1319,9 @@ def build_portfolio_en(data, date_str, session_en="Morning", icon="🌅", time_g
 <div class="sec"><div class="dot"></div>₿ CRYPTO — Prices & News</div>
 <div class="g4">{crypto_cards}</div>
 
-<div class="sec"><div class="dot"></div>⚡ ACTION PLAN — My Direct Recommendations</div>
+<div class="sec"><div class="dot"></div>⚡ ACTION PLAN — Live Computed Recommendations ({win_le})</div>
 <table class="tbl" style="direction:ltr">
-<tr><th>Asset</th><th>Price</th><th>P&L %</th><th>Action</th></tr>
+<tr><th>Asset</th><th>Price</th><th>Window %</th><th>Action</th><th>Entry</th><th>Target</th><th>Stop</th><th>Why</th></tr>
 {action_rows}
 </table>
 
@@ -919,264 +1368,11 @@ def fetch_opportunity_prices() -> dict:
 
 def build_market_ar(data, date_str, session="الصباحي", icon="🌅", time_gst="10:30 GST", am="", amb="", dv="", dvb=""):
     css = build_css(am, amb, dv, dvb)
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><style>{css}</style></head>
-<body>
-<!-- PAGE 1: MACRO + SECTORS -->
-<div class="page ar">
-<div class="hdr" style="flex-direction:row-reverse">
-  <div style="text-align:right">
-    <div class="hdr-badge">تحليل السوق اليومي · الجزء الأول</div>
-    <div class="hdr-title">تحليل السوق العالمي والفرص</div>
-    <div class="hdr-sub">الاقتصاد الكلي · الجيوسياسة · القطاعات · الكريبتو · السيناريوهات</div>
-  </div>
-  <div style="text-align:left">
-    <div style="font-size:18px;font-weight:700;color:#fff">{date_str}</div>
-    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">2:30 ظهرًا · بتوقيت الخليج</div>
-  </div>
-</div>
-
-<div class="strip">
-  <div class="sc" style="background:linear-gradient(135deg,#fff5f5,#ffe8e8)">
-    <div class="sv neg">7,383</div><div class="sl">S&P 500 (−2.64%)</div>
-  </div>
-  <div class="sc" style="background:linear-gradient(135deg,#fff5f5,#ffe8e8)">
-    <div class="sv neg">25,709</div><div class="sl">ناسداك (−4.18%)</div>
-  </div>
-  <div class="sc" style="background:linear-gradient(135deg,#fffdf0,#fef3c7)">
-    <div class="sv warn">$97</div><div class="sl">برنت/برميل</div>
-  </div>
-  <div class="sc" style="background:linear-gradient(135deg,#fefce8,#fef9c3)">
-    <div class="sv" style="color:#92400e;font-family:DV">$4,593</div><div class="sl">الذهب/أوقية</div>
-  </div>
-  <div class="sc" style="background:linear-gradient(135deg,#ebf8ff,#dde9f5)">
-    <div class="sv hl">3.50%</div><div class="sl">الفائدة الفيدرالية</div>
-  </div>
-</div>
-
-<div class="alert alert-ar a-r">
-  <div class="a-icon">🔴</div>
-  <div style="flex:1;text-align:right">
-    <div class="a-title">موجة بيع حادة في أشباه الموصلات — أسوأ جلسة منذ مارس 2020</div>
-    <div class="a-body">ناسداك −4.18% · SOX (أشباه الموصلات) أسوأ يوم منذ 2020 · تريليون دولار مُمحى في 48 ساعة. المحرك: إخفاق برودكوم + تقرير وظائف قوي (172K) يرفع مخاوف الفائدة + إيران تعلّق المحادثات وترفع النفط 6%.</div>
-  </div>
-</div>
-
-<div class="sec sec-ar"><div class="dot"></div>🌍 المشهد الجيوسياسي والكلي</div>
-<div class="g3">
-  <div class="card" style="text-align:right">
-    <div style="font-size:10px;color:#718096;margin-bottom:7px">🇺🇸🇮🇷 الصراع الأمريكي-الإيراني</div>
-    <div style="font-size:11.5px;color:#2d3748;line-height:1.7">مضيق هرمز مغلق جزئيًا — 21% من نفط العالم. إيران علّقت المحادثات 1 يونيو. برنت يقفز 6% في جلسة واحدة.<br><br><strong style="color:#0f2d5a">تقييمي:</strong> 60% تسوية بحلول Q3. 40% تصعيد صيفي — سيناريو $200/برميل.</div>
-  </div>
-  <div class="card" style="text-align:right">
-    <div style="font-size:10px;color:#718096;margin-bottom:7px">🇺🇸🇨🇳 حرب الرقائق والذكاء الاصطناعي</div>
-    <div style="font-size:11.5px;color:#2d3748;line-height:1.7">الصين تمتلك الآن 41% من سوق رقائق AI محليًا (مقابل 10% في 2023). هواوي وكامبريكون يتقدمان بسرعة كبيرة.<br><br><strong style="color:#0f2d5a">تقييمي:</strong> الانفصال لا رجعة فيه. PLTR وNOW أكثر حمايةً.</div>
-  </div>
-  <div class="card" style="text-align:right">
-    <div style="font-size:10px;color:#718096;margin-bottom:7px">🏦 الاحتياطي الفيدرالي</div>
-    <div style="font-size:11.5px;color:#2d3748;line-height:1.7">الرئيس الجديد كيفن وورش (منذ 15 مايو). FOMC القادم: 16-17 يونيو. السوق يسعّر 98% ثبات.<br><br>⚡ <strong style="color:#c53030">CPI الأهم: 10 يونيو</strong><br>JP Morgan: 35% احتمال ركود.</div>
-  </div>
-</div>
-
-<div class="sec sec-ar"><div class="dot"></div>📊 بطاقة تقييم القطاعات</div>
-<table class="tbl" style="direction:rtl">
-<tr><th style="text-align:right">القطاع</th><th style="text-align:right">الحالة</th><th style="text-align:right">توقعي</th><th style="text-align:right">الإشارة</th></tr>
-<tr><td><strong>ذكاء اصطناعي / رقائق</strong></td><td class="neg">تصحيح عميق</td><td>الأطروحة سليمة — منطقة تراكم</td><td class="warn">انتظر · CPI أولاً</td></tr>
-<tr><td><strong>برمجيات AI المؤسسية</strong></td><td class="neg">تحت ضغط</td><td>PLTR وNOW: فرصة على الانخفاض</td><td class="pos">تراكم انتقائي</td></tr>
-<tr><td><strong>الدفاع والفضاء</strong></td><td class="pos">يتفوق</td><td>رياح خلفية هيكلية</td><td class="pos">صاعد</td></tr>
-<tr><td><strong>الطاقة / النفط</strong></td><td class="pos">مرتفع</td><td>قريب: $85-100. الحل = تراجع حاد</td><td class="warn">محايد</td></tr>
-<tr><td><strong>الذهب / المعادن</strong></td><td class="pos">قوي</td><td>سوق صاعدة هيكلية حتى 2027</td><td class="pos">صاعد</td></tr>
-<tr><td><strong>الكريبتو (عام)</strong></td><td class="neg">ضغط هبوطي</td><td>BTC $60K خط الدفاع · CLARITY Act = المحفز</td><td class="warn">انتقائي</td></tr>
-</table>
-
-<div class="sec sec-ar"><div class="dot"></div>🎯 السيناريوهات — تقييمي الاحتمالي</div>
-<div class="sc3">
-  <div class="scn s-bull" style="text-align:right">
-    <div class="sn-t">🟢 السيناريو الصاعد</div>
-    <div class="prob">25%</div>
-    <p>CPI بارد + اتفاق إيران + مرور CLARITY Act → تعافٍ متفجر في الرقائق والكريبتو. S&P 500 فوق 7,600. XRP +50%+.</p>
-  </div>
-  <div class="scn s-base" style="text-align:right">
-    <div class="sn-t">🔵 السيناريو الأساسي</div>
-    <div class="prob">50%</div>
-    <p>التعثر والمضي → فيدرالي ثابت → إيران محتوى → سوق جانبية 7,000-7,600. تعافٍ جزئي بطيء.</p>
-  </div>
-  <div class="scn s-bear" style="text-align:right">
-    <div class="sn-t">🔴 السيناريو الهابط</div>
-    <div class="prob">25%</div>
-    <p>CPI ساخن + تصعيد إيران + إشارة رفع وورش → ركود JP Morgan 35% → S&P 500 يختبر 6,500.</p>
-  </div>
-</div>
-
-<div class="cal-g">
-  <div class="cal hot"><div class="cal-d">الثلاثاء 10 يونيو</div><div class="cal-e">🔴 CPI مايو — الأهم</div></div>
-  <div class="cal warm"><div class="cal-d">الخميس 12 يونيو</div><div class="cal-e">🚀 IPO سبيس إكس $75B</div></div>
-  <div class="cal cool"><div class="cal-d">يونيو 2026</div><div class="cal-e">⚖️ تصويت CLARITY Act</div></div>
-  <div class="cal cool"><div class="cal-d">16-17 يونيو</div><div class="cal-e">🏦 FOMC — أول وورش</div></div>
-  <div class="cal hot"><div class="cal-d">الثلاثاء 24 يونيو</div><div class="cal-e">🔴 أرباح مايكرون MU</div></div>
-</div>
-<div class="footer">تحليل السوق اليومي · الجزء الأول · {date_str} · للأغراض المعلوماتية فقط · ليس نصيحة مالية</div>
-</div>
-
-<!-- PAGE 2: OPPORTUNITIES -->
-<div class="page ar">
-<div style="background:linear-gradient(135deg,#0f2d5a,#1d4ed8);border-radius:12px;padding:18px 26px;margin-bottom:18px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 4px 16px rgba(29,78,216,.22)">
-  <div style="text-align:right">
-    <div style="font-size:10px;color:rgba(255,255,255,.65);margin-bottom:3px">تحليل السوق اليومي · الجزء الثاني</div>
-    <div style="font-size:19px;font-weight:700;color:#fff">فرص الدخول الواعدة</div>
-  </div>
-  <div style="font-size:10.5px;color:rgba(255,255,255,.75)">{date_str}</div>
-</div>
-
-<div class="sec sec-ar"><div class="dot"></div>🌟 فرص في الأسهم خارج محفظتك</div>
-
-<div class="opp">
-  <div class="opp-t" style="text-align:right">🟢 فرصة 1: Bitcoin (BTC) — $60K هو سعر الدخول المؤسسي</div>
-  <p style="text-align:right">BTC عند $60K اليوم هو نفس السعر الذي دفعه المؤسسيون الكبار في أبريل. Strategy أضافت 80,000 BTC في 2026 وحدها. ETF BlackRock يواصل التراكم اليومي. $60K هو خط الدفاع النفسي الحاسم — كسره يعني ضغطًا نحو $45-50K، لكن الاحتمال الأكثر ترجيحًا هو الصمود والارتداد.<br><br><strong>نقطة الدخول:</strong> $58-62K مرحليًا · <strong>الهدف:</strong> $80-90K عند تحسن الظروف الكلية · <strong>وقف الخسارة:</strong> $54K</p>
-</div>
-
-<div class="opp">
-  <div class="opp-t" style="text-align:right">🟢 فرصة 2: Coinbase (COIN) — الرابح الأكبر من CLARITY Act</div>
-  <p style="text-align:right">COIN هو المستفيد الأكبر من تحقق الوضوح التنظيمي في الولايات المتحدة. أحجام التداول على المنصة تتجاوز $1.5 تريليون سنويًا. قانون CLARITY Act يفتح الباب للأصول المؤسسية على نطاق غير مسبوق. السهم تراجع 30% من قمته — نقطة دخول مثيرة للاهتمام.<br><br><strong>نقطة الدخول:</strong> $180-200 · <strong>الهدف:</strong> $280+ خلال 12 شهرًا · <strong>المحفز:</strong> تصويت CLARITY Act يونيو 2026</p>
-</div>
-
-<div class="opp">
-  <div class="opp-t" style="text-align:right">🟡 فرصة 3: AMD — بديل للتنويع في قطاع الرقائق</div>
-  <p style="text-align:right">AMD هبطت 12.6% في نفس موجة البيع — لكن تقييمها أكثر معقولية من MU. MI300X GPU يكسب حصة سوقية في الذكاء الاصطناعي مقابل Nvidia. لا تعرض صيني مباشر — ميزة في بيئة حرب الرقائق الحالية. تنويع جيد لمن لديه تعرض كبير لمايكرون.<br><br><strong>نقطة الدخول:</strong> $100-115 · <strong>الهدف:</strong> $150+ · <strong>المخاطرة:</strong> متوسطة</p>
-</div>
-
-<div class="sec sec-ar"><div class="dot"></div>🌟 فرص في الكريبتو خارج محفظتك</div>
-
-<div class="opp">
-  <div class="opp-t" style="text-align:right">🟢 فرصة 4: Stellar (XLM) — موجة التوكنزيشن</div>
-  <p style="text-align:right">XLM ارتفعت 40% بعد إعلان DTCC اختيارها لشبكتها لتوكنزيشن الأوراق المالية. هذا يثبت أن التمويل التقليدي بدأ يتبنى البلوكشين العامة. XLM تتشابه في حالة الاستخدام مع XRP لكن بتقييم أقل.<br><br><strong>نقطة الدخول:</strong> $0.08-0.10 · <strong>الهدف:</strong> $0.20-0.25 · <strong>المحفز:</strong> توسع شراكات DTCC والبنوك</p>
-</div>
-
-<div class="opp">
-  <div class="opp-t" style="text-align:right">🟢 فرصة 5: Ethereum (ETH) — تحت $2,000 فرصة تاريخية</div>
-  <p style="text-align:right">ETH تحت $2,000 هي مستوى شهدنا فيه تاريخيًا تراكمًا مؤسسيًا قويًا. ETH ETF يواصل التدفقات الإيجابية. Pectra upgrade محفز تقني قريب. معدل الحرق لا يزال يقلص العرض تدريجيًا.<br><br><strong>نقطة الدخول:</strong> $1,600-1,800 · <strong>الهدف:</strong> $2,800-3,200 · <strong>المحفز:</strong> تحسن الظروف الكلية + Pectra</p>
-</div>
-
-<div class="bline" style="text-align:right">
-  <h3>⚡ خلاصتي — قراءة المشهد الكامل</h3>
-  <p>نحن في منطقة ضغط مؤقت ناجمة عن ثلاثة عوامل متقاطعة: إعادة تسعير AI بعد برودكوم، مخاوف الفائدة من تقرير الوظائف، وضغط النفط من أزمة هرمز. <strong>لا شيء من هذا يلغي الأطروحة الهيكلية</strong> لمحفظتك أو لسوق الكريبتو بشكل عام.<br><br>
-  أولوياتك هذا الأسبوع: (1) CPI 10 يونيو — إن جاء باردًا أضف على NOW. (2) راقب Form 4 لـ CBRS يوميًا. (3) لا تتحرك على MU حتى 24 يونيو. أما الفرص خارج محفظتك: BTC عند $60K وCOIN قبل CLARITY Act هما أفضل فرصتين قصيرتي المدى.</p>
-</div>
-<div class="footer">تحليل السوق اليومي · الجزء الثاني · {date_str} · للأغراض المعلوماتية فقط · ليس نصيحة مالية</div>
-</div>
-</body></html>"""
+    return _market_ar_live(data, date_str, session, time_gst, css)
 
 def build_market_en(data, date_str, session_en="Morning", icon="🌅", time_gst="10:30 GST", am="", amb="", dv="", dvb=""):
     css = build_css(am, amb, dv, dvb)
-    return f"""<!DOCTYPE html>
-<html><head><meta charset="UTF-8"><style>{css}</style></head>
-<body>
-<div class="page en">
-<div class="hdr">
-  <div>
-    <div class="hdr-badge">Daily Market Analysis · Part 1</div>
-    <div class="hdr-title">Global Market Intelligence & Opportunities</div>
-    <div class="hdr-sub">Macro · Geopolitics · Sectors · Crypto · Scenarios · Entry Opportunities</div>
-  </div>
-  <div style="text-align:right">
-    <div style="font-size:18px;font-weight:700;color:#fff">{date_str}</div>
-    <div style="font-size:10px;color:rgba(255,255,255,.7);margin-top:3px">{time_gst} · {session_en}</div>
-  </div>
-</div>
-
-<div class="strip">
-  <div class="sc" style="background:linear-gradient(135deg,#fff5f5,#ffe8e8)"><div class="sv neg">7,383</div><div class="sl">S&P 500 (−2.64%)</div></div>
-  <div class="sc" style="background:linear-gradient(135deg,#fff5f5,#ffe8e8)"><div class="sv neg">25,709</div><div class="sl">Nasdaq (−4.18%)</div></div>
-  <div class="sc" style="background:linear-gradient(135deg,#fffdf0,#fef3c7)"><div class="sv warn">$97</div><div class="sl">Brent/bbl</div></div>
-  <div class="sc" style="background:linear-gradient(135deg,#fefce8,#fef9c3)"><div class="sv" style="color:#92400e;font-family:DV">$4,593</div><div class="sl">Gold/oz</div></div>
-  <div class="sc" style="background:linear-gradient(135deg,#ebf8ff,#dde9f5)"><div class="sv hl">3.50%</div><div class="sl">Fed Rate</div></div>
-</div>
-
-<div class="alert a-r">
-  <div class="a-icon">🔴</div>
-  <div style="flex:1">
-    <div class="a-title">Semiconductor Selloff — Worst Session Since March 2020</div>
-    <div class="a-body">Nasdaq −4.18% · SOX (Philadelphia Semiconductor Index) worst day since March 2020 · $1T erased in 48 hours. Triple catalyst: Broadcom miss + strong May jobs (172K) reviving rate-hike fears + Iran suspends talks, oil spikes 6%.</div>
-  </div>
-</div>
-
-<div class="sec"><div class="dot"></div>🌍 Geopolitical & Macro Landscape</div>
-<div class="g3">
-  <div class="card">
-    <div style="font-size:10px;color:#718096;margin-bottom:7px">🇺🇸🇮🇷 US-Iran Conflict</div>
-    <div style="font-size:11.5px;color:#2d3748;line-height:1.7">Strait of Hormuz partially blocked — 21% of world oil. Iran suspended talks June 1. Brent spiked 6% in one session.<br><br><strong style="color:#0f2d5a">My view:</strong> 60% partial resolution by Q3. 40% summer escalation — $200/barrel scenario.</div>
-  </div>
-  <div class="card">
-    <div style="font-size:10px;color:#718096;margin-bottom:7px">🇺🇸🇨🇳 AI / Chip War</div>
-    <div style="font-size:11.5px;color:#2d3748;line-height:1.7">China now holds 41% of its AI chip market domestically (vs 10% in 2023). Huawei advancing rapidly.<br><br><strong style="color:#0f2d5a">My view:</strong> Decoupling is permanent. PLTR and NOW relatively insulated with no China exposure.</div>
-  </div>
-  <div class="card">
-    <div style="font-size:10px;color:#718096;margin-bottom:7px">🏦 Federal Reserve</div>
-    <div style="font-size:11.5px;color:#2d3748;line-height:1.7">New Chair Kevin Warsh (since May 15). Next FOMC: June 16-17. Market pricing 98% no change.<br><br>⚡ <strong style="color:#c53030">Critical CPI: June 10</strong><br>JP Morgan recession probability: 35%.</div>
-  </div>
-</div>
-
-<div class="sec"><div class="dot"></div>📊 Sector Scorecard</div>
-<table class="tbl">
-<tr><th>Sector</th><th>Status</th><th>My Outlook</th><th>Signal</th></tr>
-<tr><td><strong>AI / Semiconductors</strong></td><td class="neg">Deep correction</td><td>Thesis intact — accumulation zone</td><td class="warn">Wait · CPI first</td></tr>
-<tr><td><strong>Enterprise AI Software</strong></td><td class="neg">Under pressure</td><td>PLTR, NOW: dip = opportunity</td><td class="pos">Selective accumulate</td></tr>
-<tr><td><strong>Defense & Aerospace</strong></td><td class="pos">Outperforming</td><td>Structural tailwind from Iran conflict</td><td class="pos">Bullish</td></tr>
-<tr><td><strong>Energy / Oil</strong></td><td class="pos">Elevated</td><td>Near-term $85-100. Resolution = sharp drop</td><td class="warn">Neutral</td></tr>
-<tr><td><strong>Gold / Metals</strong></td><td class="pos">Strong</td><td>Structural bull market through 2027</td><td class="pos">Bullish</td></tr>
-<tr><td><strong>Crypto (broad)</strong></td><td class="neg">Bear pressure</td><td>BTC $60K defense. CLARITY Act = catalyst</td><td class="warn">Selective by asset</td></tr>
-</table>
-
-<div class="sec"><div class="dot"></div>🎯 Scenario Probabilities</div>
-<div class="sc3">
-  <div class="scn s-bull">
-    <div class="sn-t">🟢 Bull Scenario</div><div class="prob">25%</div>
-    <p>Cool CPI + Iran deal + CLARITY Act → explosive recovery in semis and crypto. S&P 500 above 7,600. XRP +50%+.</p>
-  </div>
-  <div class="scn s-base">
-    <div class="sn-t">🔵 Base Scenario</div><div class="prob">50%</div>
-    <p>Muddle-through → Fed on hold → Iran contained → range-bound 7,000-7,600. Slow partial recovery.</p>
-  </div>
-  <div class="scn s-bear">
-    <div class="sn-t">🔴 Bear Scenario</div><div class="prob">25%</div>
-    <p>Hot CPI + Iran escalation + Warsh hike signal → JP Morgan's 35% recession materializes → S&P 500 tests 6,500.</p>
-  </div>
-</div>
-
-<div class="sec"><div class="dot"></div>🌟 Investment Opportunities</div>
-<div class="opp">
-  <div class="opp-t">🟢 Opportunity 1: Bitcoin (BTC) — $60K = Institutional Entry Price</div>
-  <p>BTC at $60K today is the same level institutions paid in April. Strategy added 80,000 BTC in 2026 alone. BlackRock ETF continues daily accumulation. $60K is the critical psychological support — the most likely scenario is a hold and bounce.<br><br><strong>Entry:</strong> $58-62K in tranches · <strong>Target:</strong> $80-90K on macro improvement · <strong>Stop:</strong> $54K</p>
-</div>
-<div class="opp">
-  <div class="opp-t">🟢 Opportunity 2: Coinbase (COIN) — CLARITY Act Proxy Trade</div>
-  <p>COIN is the single largest beneficiary of US regulatory clarity. Platform volume exceeds $1.5T annually. CLARITY Act unlocks institutional asset management on-chain at unprecedented scale. Stock down 30% from peak.<br><br><strong>Entry:</strong> $180-200 · <strong>Target:</strong> $280+ (12 months) · <strong>Catalyst:</strong> CLARITY Act vote June 2026</p>
-</div>
-<div class="opp">
-  <div class="opp-t">🟡 Opportunity 3: AMD — Better-Valued Chip Diversification</div>
-  <p>AMD fell 12.6% in the same selloff but trades at a more reasonable valuation than MU. MI300X GPU gaining AI market share. No direct China revenue exposure — key advantage in the chip war environment.<br><br><strong>Entry:</strong> $100-115 · <strong>Target:</strong> $150+ · <strong>Risk:</strong> Medium</p>
-</div>
-<div class="opp">
-  <div class="opp-t">🟢 Opportunity 4: Stellar (XLM) — Tokenization Wave</div>
-  <p>XLM surged 40% after DTCC chose its network for tokenized securities — proof that traditional finance is beginning to adopt public blockchains. XLM has a similar use case to XRP but lower valuation.<br><br><strong>Entry:</strong> $0.08-0.10 · <strong>Target:</strong> $0.20-0.25 · <strong>Catalyst:</strong> DTCC + bank partnerships</p>
-</div>
-
-<div class="bline">
-  <h3>⚡ Bottom Line — My Complete Assessment</h3>
-  <p>We are in temporary pressure driven by three converging forces: AI valuation reset post-Broadcom, rate-hike fears from the jobs report, and oil pressure from the Hormuz crisis. <strong>None of this invalidates the structural thesis</strong> of your portfolio or crypto broadly.<br><br>
-  This week's priorities: (1) June 10 CPI — if cool, add to NOW. (2) Watch CBRS Form 4 daily. (3) Do nothing on MU until June 24. For opportunities outside your portfolio: BTC at $60K and COIN pre-CLARITY Act are the two best near-term setups.</p>
-</div>
-
-<div class="cal-g">
-  <div class="cal hot"><div class="cal-d">Tue Jun 10</div><div class="cal-e">🔴 May CPI</div></div>
-  <div class="cal warm"><div class="cal-d">Thu Jun 12</div><div class="cal-e">🚀 SpaceX IPO $75B</div></div>
-  <div class="cal cool"><div class="cal-d">~Jun 2026</div><div class="cal-e">⚖️ CLARITY Act</div></div>
-  <div class="cal cool"><div class="cal-d">Jun 16-17</div><div class="cal-e">🏦 FOMC — Warsh</div></div>
-  <div class="cal hot"><div class="cal-d">Tue Jun 24</div><div class="cal-e">🔴 MU Earnings</div></div>
-</div>
-<div class="footer">Daily Market Analysis · {date_str} · For informational purposes only · Not financial advice · Powered by Claude + Alpha Vantage</div>
-</div>
-</body></html>"""
+    return _market_en_live(data, date_str, session_en, time_gst, css)
 
 # ── BUILD PDFs ────────────────────────────────────────────────
 def build_pdf(html, out_path):
@@ -1267,12 +1463,11 @@ def send_briefing(pdfs, data, date_str, session="الصباحي", session_en="Mo
         time.sleep(1)
     time.sleep(4)
 
-    # Build quick summary for email body
     lines_s, lines_c = [], []
     t_cost = t_val = 0
     for s in PORTFOLIO["stocks"]:
         q = data["stocks"][s["sym"]].get("quote", {})
-        cur = q.get("price", s["buy"])
+        cur = data["stocks"][s["sym"]].get("price") or q.get("price", s["buy"])
         val = s["qty"] * cur
         cost= s["qty"] * s["buy"]
         pnl = ((val-cost)/cost)*100
@@ -1289,10 +1484,12 @@ def send_briefing(pdfs, data, date_str, session="الصباحي", session_en="Mo
 
     t_pnl = t_val - t_cost
     t_pct = (t_pnl/t_cost)*100 if t_cost else 0
+    win_la = data.get("window", {}).get("la", "")
 
     body = f"""{greeting} سيف {icon}
 
 تقاريرك {session}ية جاهزة — {date_str}
+🕐 {win_la}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 📈 الأسهم:
@@ -1320,7 +1517,7 @@ def send_briefing(pdfs, data, date_str, session="الصباحي", session_en="Mo
 {urls.get('market_en', 'N/A')}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-🤖 Claude · Alpha Vantage MCP
+🤖 Claude · محرك تحليل لحظي
 ⚠️ للأغراض المعلوماتية فقط · ليس نصيحة مالية
 """
     send_email(f"📊 تقريرك {session} {icon} | {date_str} | {time_gst}", body)
@@ -1344,15 +1541,18 @@ def run():
         icon       = "🌙"
 
     date_str = now.strftime("%A, %B %d, %Y")
+    sess_key = "evening" if gst_hour >= 17 else "morning"
 
     print(f"\n{'='*50}")
     print(f"  {session_en.upper()} BRIEFING — {date_str} {time_gst}")
+    print(f"  window session = {sess_key}")
     print(f"{'='*50}")
 
-    data = collect_data()
+    data = collect_data(session=sess_key)
     pdfs = build_all_pdfs(data, date_str, session, session_en, icon, time_gst)
     send_briefing(pdfs, data, date_str, session, session_en, icon, time_gst, greeting)
     print(f"\n✅ Done — {date_str} {time_gst}\n")
 
 if __name__ == "__main__":
     run()
+# v2: live window engine + computed recommendations + AI layer
