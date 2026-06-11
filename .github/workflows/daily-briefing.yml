@@ -2,24 +2,19 @@ name: Daily Briefing
 
 on:
   schedule:
-    # Morning briefing — target 2:30 PM GST (10:30 UTC). Staggered backups in case
-    # GitHub drops a slot. Same-session dedup (below) prevents duplicate emails.
-    - cron: "37 10 * * 1-5"
+    # cron-job.org is the PRIMARY on-time trigger (2:30 PM / 9:00 PM GST = 10:30 / 17:00 UTC).
+    # These GitHub crons are a cloud backup, offset ~15 min. No dedup: every trigger sends.
     - cron: "47 10 * * 1-5"
-    - cron: "57 10 * * 1-5"
-    # Evening briefing — target 9:00 PM GST (17:00 UTC). Staggered backups.
-    - cron: "07 17 * * 1-5"
     - cron: "17 17 * * 1-5"
-    - cron: "27 17 * * 1-5"
   workflow_dispatch:
     inputs:
       force:
-        description: "Send even if this session was already sent today. Use the string true to bypass dedup."
+        description: "Unused (dedup removed); kept for trigger compatibility."
         required: false
         type: string
         default: "false"
 
-# Never run two briefing jobs at once — closes the race between staggered crons.
+# Avoid two briefing jobs running at the same instant.
 concurrency:
   group: daily-briefing
   cancel-in-progress: false
@@ -38,42 +33,17 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Compute session key (UTC)
-        id: ses
-        run: |
-          H=$(date -u +%H)
-          D=$(date -u +%F)
-          if [ "$H" -lt 14 ]; then S=morning; else S=evening; fi
-          echo "date=$D" >> "$GITHUB_OUTPUT"
-          echo "session=$S" >> "$GITHUB_OUTPUT"
-          echo "Session for this run: $D $S (UTC hour=$H)"
-
-      - name: Dedup check (has this session already sent today?)
-        id: dedup
-        uses: actions/cache/restore@v4
-        with:
-          path: .briefing_state
-          key: sent-${{ steps.ses.outputs.date }}-${{ steps.ses.outputs.session }}
-
-      - name: Skip notice
-        if: steps.dedup.outputs.cache-hit == 'true' && github.event.inputs.force != 'true'
-        run: echo "Already sent ${{ steps.ses.outputs.session }} briefing today (${{ steps.ses.outputs.date }}) - skipping."
-
       - name: Install packages
-        if: steps.dedup.outputs.cache-hit != 'true' || github.event.inputs.force == 'true'
         run: pip install --quiet playwright requests arabic-reshaper python-bidi yfinance
 
       - name: Install Chromium
-        if: steps.dedup.outputs.cache-hit != 'true' || github.event.inputs.force == 'true'
         run: python -m playwright install chromium --with-deps
 
       - name: Verify fonts
-        if: steps.dedup.outputs.cache-hit != 'true' || github.event.inputs.force == 'true'
         run: ls -lh fonts/
 
       - name: Run agent (attempt 1)
         id: attempt1
-        if: steps.dedup.outputs.cache-hit != 'true' || github.event.inputs.force == 'true'
         env:
           AV_KEY: ${{ secrets.AV_KEY }}
           BRIEFING_PAT: ${{ secrets.BRIEFING_PAT }}
@@ -93,22 +63,9 @@ jobs:
           RESEND_KEY: ${{ secrets.RESEND_KEY }}
         run: python morning_briefing_agent.py
 
-      - name: Mark this session as sent
-        if: success() && steps.attempt1.outcome != 'skipped'
-        run: |
-          mkdir -p .briefing_state
-          echo "sent ${{ steps.ses.outputs.date }} ${{ steps.ses.outputs.session }} (run ${{ github.run_id }})" > ".briefing_state/${{ steps.ses.outputs.date }}-${{ steps.ses.outputs.session }}.txt"
-
-      - name: Save dedup marker
-        if: success() && steps.attempt1.outcome != 'skipped' && steps.dedup.outputs.cache-hit != 'true'
-        uses: actions/cache/save@v4
-        with:
-          path: .briefing_state
-          key: sent-${{ steps.ses.outputs.date }}-${{ steps.ses.outputs.session }}
-
       - name: Save PDF artifact
         uses: actions/upload-artifact@v4
-        if: always() && (steps.dedup.outputs.cache-hit != 'true' || github.event.inputs.force == 'true')
+        if: always()
         with:
           name: briefing-${{ github.run_id }}
           path: "*.pdf"
