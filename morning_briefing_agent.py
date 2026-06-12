@@ -27,9 +27,9 @@ PORTFOLIO = {
         {"sym":"PLTR", "name":"بالانتير",             "name_en":"Palantir Technologies","qty":62,             "buy":157.58,  "color":"7C3AED", "earn":"10 أغسطس 2026"},
     ],
     "crypto": [
-        {"sym":"XRP",  "name":"ريبل",        "name_en":"Ripple",     "qty":1091.9141638,   "buy":0.94640265, "color":"0284C7", "cat":"مدفوعات"},
-        {"sym":"SOL",  "name":"سولانا",      "name_en":"Solana",     "qty":18.67559317,    "buy":82.35,      "color":"9945FF", "cat":"بنية تحتية"},
-        {"sym":"HBAR", "name":"هيدرا",       "name_en":"Hedera",     "qty":6888.17073321,  "buy":0.27098023, "color":"0D9488", "cat":"بنية تحتية"},
+        {"sym":"XRP",  "name":"ريبل",        "name_en":"Ripple",     "qty":1111.6017270,   "buy":0.94640265, "color":"0284C7", "cat":"مدفوعات"},
+        {"sym":"SOL",  "name":"سولانا",      "name_en":"Solana",     "qty":19.73070853,    "buy":82.35,      "color":"9945FF", "cat":"بنية تحتية"},
+        {"sym":"HBAR", "name":"هيدرا",       "name_en":"Hedera",     "qty":6888.18697874,  "buy":0.27098023, "color":"0D9488", "cat":"بنية تحتية"},
     ]
 }
 
