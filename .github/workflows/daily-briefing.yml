@@ -1,11 +1,6 @@
 name: Daily Briefing
 
 on:
-  schedule:
-    # cron-job.org is the PRIMARY on-time trigger (2:30 PM / 9:00 PM GST = 10:30 / 17:00 UTC).
-    # These GitHub crons are a cloud backup, offset ~15 min. No dedup: every trigger sends.
-    - cron: "47 10 * * 1-5"
-    - cron: "17 17 * * 1-5"
   workflow_dispatch:
     inputs:
       force:
